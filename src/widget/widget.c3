@@ -1,6 +1,6 @@
 module ui;
 
-enum WidgetKind { TEXT, BUTTON, ROW, COLUMN, CHECKBOX }
+enum WidgetKind { TEXT, BUTTON, ROW, COLUMN, CHECKBOX, SCROLL_COLUMN }
 alias ClickHandler = fn void(void* context);
 alias CheckHandler = fn void(void* context, bool checked);
 
@@ -22,6 +22,10 @@ struct Widget
 	Rect visible; // bounds intersected with every ancestor's content clip
 	Size desired;
 	Size text_size;
+	int content_height; // Scroll group extent, excluding viewport padding.
+	int scroll_y;
+	int scroll_max;
+	bool scroll_space; // Signed coordinates inside a scrolling subtree.
 	Binding* binding;
 	Binding* enabled_binding;
 	Binding* visible_binding;
@@ -39,7 +43,7 @@ struct Widget
 	bool subtree_layout_dirty;
 }
 
-fn bool Widget.is_container(&self) => self.kind == ROW || self.kind == COLUMN;
+fn bool Widget.is_container(&self) => self.kind == ROW || self.kind == COLUMN || self.kind == SCROLL_COLUMN;
 
 fn Widget* Widget.next_in_tree(&self)
 {
@@ -181,6 +185,8 @@ fn Widget* View.row(&self, Layout layout = {}) => add_container(self, ROW, layou
 fn Widget* View.column(&self, Layout layout = {}) => add_container(self, COLUMN, layout);
 fn Widget* Widget.row(&self, Layout layout = {}) => add_container(self.owner, ROW, layout, self);
 fn Widget* Widget.column(&self, Layout layout = {}) => add_container(self.owner, COLUMN, layout, self);
+fn Widget* View.scroll_column(&self, Layout layout = {}) => add_container(self, SCROLL_COLUMN, layout);
+fn Widget* Widget.scroll_column(&self, Layout layout = {}) => add_container(self.owner, SCROLL_COLUMN, layout, self);
 
 fn void assign_text(Widget* self, String text) @private
 {
@@ -393,7 +399,7 @@ fn void View.focus_next(&self, bool reverse = false)
 	bool passed = self.focused == null;
 	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
 	{
-		if (!widget.interactive()) continue;
+		if (!reveal_candidate(widget, false)) continue;
 		if (!first) first = widget;
 		last = widget;
 		if (widget == self.focused) { passed = true; continue; }
@@ -401,7 +407,13 @@ fn void View.focus_next(&self, bool reverse = false)
 		else if (!next) { next = widget; }
 	}
 	if (self.focused) self.invalidate(self.focused.visible);
-	self.focused = reverse ? (previous ? previous : last) : (next ? next : first);
+	Widget* target = reverse ? (previous ? previous : last) : (next ? next : first);
+	if (target)
+	{
+		reveal_candidate(target, true);
+		self.update();
+	}
+	self.focused = target && target.interactive() ? target : null;
 	if (self.focused) self.invalidate(self.focused.visible);
 }
 

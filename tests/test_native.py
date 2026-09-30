@@ -134,6 +134,13 @@ class X11Desktop:
         self.input(window, 4, 1, x + width // 2, y + height // 2)
         self.input(window, 5, 1, x + width // 2, y + height // 2)
 
+    def wheel(self, window, rect, steps=1):
+        x, y, width, height = rect
+        for _ in range(abs(steps)):
+            for kind in (4, 5):
+                self.input(window, kind, 5 if steps > 0 else 4,
+                           x + width // 2, y + height // 2)
+
     def key_event(self, window, name, down=True, repeat=False, shift=False):
         symbol = {"Tab": 0xFF09, "Return": 0xFF0D, "Space": 0x20}[name]
         first, stride, symbols = self.keyboard_mapping()
@@ -205,6 +212,7 @@ class WindowsDesktop:
         self.api.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, c.c_int, c.c_int,
                                          c.c_int, c.c_int, wintypes.UINT]
         self.api.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        self.api.ClientToScreen.argtypes = [wintypes.HWND, c.POINTER(wintypes.POINT)]
 
     def find(self, title):
         window = self.api.FindWindowW("ui.c3l.window", title)
@@ -226,6 +234,19 @@ class WindowsDesktop:
         for message, wparam in ((0x201, 1), (0x202, 0)):
             if not self.api.PostMessageW(window, message, wparam, position):
                 raise c.WinError(c.get_last_error())
+
+    def wheel_delta(self, window, rect, delta):
+        x, y, width, height = rect
+        point = wintypes.POINT(x + width // 2, y + height // 2)
+        if not self.api.ClientToScreen(window, c.byref(point)):
+            raise c.WinError(c.get_last_error())
+        position = (point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16)
+        if not self.api.PostMessageW(window, 0x20A, (delta & 0xFFFF) << 16, position):
+            raise c.WinError(c.get_last_error())
+
+    def wheel(self, window, rect, steps=1):
+        for _ in range(abs(steps)):
+            self.wheel_delta(window, rect, -120 if steps > 0 else 120)
 
     def key_event(self, window, name, down=True, repeat=False):
         key = {"Tab": 9, "Return": 13, "Space": 32}[name]
@@ -310,6 +331,78 @@ class NativeWindowTests(unittest.TestCase):
                         reader.join(timeout=5)
             finally:
                 desktop.close()
+
+    def test_nested_wheel_boundary_bubbling_stale_clicks_and_focus_reveal(self):
+        with self.fixture("scroll_window", "ui scroll test") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            self.assertEqual((initial["inner_offset"], initial["outer_offset"]), (0, 0))
+            self.assertEqual(initial["last"][3], 0)
+
+            def inspect():
+                desktop.click(window, initial["inspect"])
+                state = snapshot()
+                self.assertEqual(state["source"], "inspect", state)
+                return state
+
+            desktop.wheel(window, initial["first"])
+            moved = inspect()
+            self.assertEqual((moved["inner_offset"], moved["outer_offset"]), (40, 0))
+            self.assertEqual(moved["first_clicks"], 0)
+            desktop.click(window, initial["first"])
+            self.assertEqual(inspect()["first_clicks"], 0)
+            desktop.wheel(window, initial["first"], steps=3)
+            bottom = inspect()
+            self.assertEqual(bottom["inner_offset"], bottom["inner_extent"])
+            self.assertEqual(bottom["outer_offset"], 0)  # Last partial step is consumed once.
+            desktop.wheel(window, initial["first"])
+            bubbled = inspect()
+            self.assertEqual((bubbled["inner_offset"], bubbled["outer_offset"]),
+                             (bottom["inner_extent"], 40))
+            desktop.wheel(window, bubbled["inner"], steps=-1)
+            reverse = inspect()
+            self.assertEqual((reverse["inner_offset"], reverse["outer_offset"]),
+                             (bottom["inner_extent"] - 40, 40))
+
+            desktop.click(window, initial["reset"])
+            self.assertEqual(snapshot()["source"], "reset")
+            desktop.key(window, "Tab")  # First.
+            desktop.key(window, "Tab")  # Last, initially fully clipped.
+            desktop.key_event(window, "Return")
+            revealed = snapshot()
+            self.assertEqual((revealed["source"], revealed["last_clicks"]), ("last", 1))
+            self.assertTrue(revealed["focused_last"])
+            self.assertEqual(revealed["inner_offset"], revealed["inner_extent"])
+            self.assertGreater(revealed["last"][3], 0)
+            desktop.key_event(window, "Return", repeat=True)
+            desktop.key(window, "Tab")  # Tail needs the outer viewport to scroll.
+            desktop.key_event(window, "Return", repeat=True)
+            desktop.key_event(window, "Return", down=False)
+            desktop.key(window, "Return")
+            tail = snapshot()
+            self.assertEqual((tail["source"], tail["last_clicks"], tail["tail_clicks"]),
+                             ("tail", 1, 1))
+            self.assertTrue(tail["focused_tail"])
+            self.assertEqual(tail["outer_offset"], tail["outer_extent"])
+            self.assertGreater(tail["tail"][3], 0)
+
+    @unittest.skipUnless(sys.platform == "win32", "native Windows wheel delta messages only")
+    def test_windows_partial_wheel_deltas_use_screen_coordinates(self):
+        with self.fixture("scroll_window", "ui scroll test") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            for _ in range(3):
+                desktop.wheel_delta(window, initial["first"], -1)
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["inner_offset"], 1)
+            desktop.wheel_delta(window, initial["first"], -57)
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["inner_offset"], 20)
+            desktop.wheel_delta(window, initial["first"], 60)
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["inner_offset"], 0)
 
     def test_keyboard_repeats_focus_and_reopen(self):
         with self.fixture("keyboard_window", "ui keyboard test 0", reopen=True) as (desktop, window, snapshot):

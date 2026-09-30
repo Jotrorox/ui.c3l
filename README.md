@@ -1,31 +1,32 @@
 # ui.c3l
 
 A small reactive retained-mode UI library for Windows and Linux (X11/XWayland),
-with text, buttons, checkboxes, and nested rows and columns. Requires C3 0.8.4 or newer.
+with text, buttons, checkboxes, nested rows and columns, and vertical scrolling.
+Requires C3 0.8.4 or newer.
 
 ```c3
-view.set_root_alignment(CENTER, STRETCH);
-view.@column({ .gap = 8, .cross_align = STRETCH }; Widget* counter)
+view.set_root_alignment(START, STRETCH);
+view.@scroll_column({ .height = 240, .padding = 8, .gap = 8, .cross_align = STRETCH }; Widget* list)
 {
-	counter.@row({ .main_align = CENTER }; Widget* summary)
+	list.text().@text(&app.count, "Count: %s");
+	for (int i = 0; i < 12; i++)
 	{
-		summary.text().@text(&app.count, "Count: %s");
-	};
-	counter.@row({ .main_align = END }; Widget* actions)
-	{
-		actions.button("Reset")
-			.@on_click(&app.count, fn (c) => c.set(0))
-			.@enabled(&app.count, fn (c) => c.get() != 0);
-	};
+		list.button("Increment").@on_click(&app.count, fn (c) => c.set(c.get() + 1));
+	}
 };
 ```
 
-Rows and columns support start, center, and end alignment, plus cross-axis
-stretch for children with automatic sizes. The root above centers its content
-vertically and stretches the counter across the viewport. See the
-[layout contract](examples/window/README.md#layout-rules) for sizing and clipping.
+The wheel scrolls the innermost list that can move; Tab reveals offscreen
+controls. Scroll container handles expose `scroll_to(y)`, `scroll_by(dy)`,
+`scroll_offset()`, and `scroll_extent()` for programmatic scrolling. Rows and
+columns retain start, center, and end alignment, plus cross-axis stretch for
+automatic sizes.
+The implicit root keeps its existing non-scrolling behavior. See the
+[scrolling contract](examples/window/README.md#vertical-scrolling) for sizing,
+clipping, input, and clamping rules.
 
-Run the [counter example](examples/window):
+Run the [nested scrolling example](examples/window), including reactive content
+changes and Top/Bottom controls:
 
 ```sh
 c3c run --path examples/window

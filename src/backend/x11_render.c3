@@ -240,9 +240,21 @@ fn void? fill_xrect(void* context, ui::Rect rect, Ink ink) @private
 fn void? draw_xtext(void* context, String text, int x, int y, Ink ink) @private => @pool()
 {
 	XCanvas* canvas = context;
-	if (canvas.clip.empty() || y + canvas.ascent > 32767) return;
-	canvas.ink(ink)!;
+	// Descendants of scroll viewports can be far above the window. Check the
+	// full signed baseline before narrowing it to the X11 INT16 wire format.
+	long baseline = (long)y + canvas.ascent;
+	if (canvas.clip.empty() || (long)y + canvas.height <= canvas.clip.y ||
+		y >= canvas.clip.y + canvas.clip.height || baseline < -32768 || baseline > 32767) return;
 	Char32[] codes = text.to_temp_utf32()!!;
+	// Skip unrepresentable left-hand glyph origins without wrapping them into
+	// the visible window. Remaining glyphs retain their true advance positions.
+	while (codes.len && x < -32768)
+	{
+		x += math::max(0, canvas.glyph_width(canvas.glyph(codes[0])));
+		codes = codes[1..];
+	}
+	if (!codes.len || x >= canvas.clip.x + canvas.clip.width) return;
+	canvas.ink(ink)!;
 	while (codes.len && x < canvas.clip.x + canvas.clip.width)
 	{
 		sz count = math::min(codes.len, (sz)254);
@@ -252,7 +264,7 @@ fn void? draw_xtext(void* context, String text, int x, int y, Ink ink) @private 
 		write32(request[..], 4, canvas.setup.window);
 		write32(request[..], 8, canvas.gc);
 		write16(request[..], 12, (uint)x);
-		write16(request[..], 14, (uint)(y + canvas.ascent));
+		write16(request[..], 14, (uint)baseline);
 		request[16] = (char)count;
 		for (sz index = 0; index < count; index++)
 		{
@@ -288,8 +300,9 @@ fn void? XCanvas.event(&self, View* view, char[] event)
 		case 22: // ConfigureNotify
 			if (read32(event, 8) == self.setup.window) view.resize(read16(event, 20), read16(event, 22));
 		case 4: // ButtonPress; the X server implicitly captures until release.
-			if (read32(event, 12) != self.setup.window || event[1] != 1) return;
-			view.pointer_down(x, y);
+			if (read32(event, 12) != self.setup.window) return;
+			if (event[1] == 4 || event[1] == 5) { view.scroll_wheel(x, y, event[1] == 4 ? -40 : 40); }
+			else if (event[1] == 1) { view.pointer_down(x, y); }
 		case 5:
 			if (read32(event, 12) == self.setup.window && event[1] == 1) view.pointer_up(x, y);
 		case 6:

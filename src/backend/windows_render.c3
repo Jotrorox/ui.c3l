@@ -14,6 +14,7 @@ extern fn Win32_HWND set_capture(Win32_HWND hwnd) @cname("SetCapture");
 extern fn Win32_BOOL release_capture() @cname("ReleaseCapture");
 extern fn Win32_HWND set_focus(Win32_HWND hwnd) @cname("SetFocus");
 extern fn short get_key_state(int key) @cname("GetKeyState");
+extern fn Win32_BOOL screen_to_client(Win32_HWND hwnd, Win32_POINT* point) @cname("ScreenToClient");
 
 struct TrackMouseEvent
 {
@@ -98,6 +99,16 @@ fn void win_key(View* view, bool down, uint key, sz flags, bool shift) @private
 		(flags & (1 << 30)) != 0, shift);
 }
 
+// Wheel deltas are signed multiples/fractions of 120. Keep the fractional
+// pixel remainder per open window so fine wheels neither stall nor drift.
+fn void win_wheel(View* view, int* remainder, int x, int y, short delta) @private
+{
+	int scaled = *remainder - (int)delta * 40;
+	int pixels = scaled / 120;
+	*remainder = scaled % 120;
+	if (pixels) view.scroll_wheel(x, y, pixels);
+}
+
 fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wparam, Win32_LPARAM lparam) @private
 {
 	View* view = window.view;
@@ -139,6 +150,10 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 			view.pointer_move(x, y);
 			TrackMouseEvent track = { TrackMouseEvent::size, 2, hwnd, 0 }; // TME_LEAVE
 			(void)track_mouse(&track);
+		case 0x20a: // WM_MOUSEWHEEL carries signed SCREEN coordinates.
+			Win32_POINT point = { x, y };
+			if (!screen_to_client(hwnd, &point)) { window.canvas.failure = ui::PLATFORM_ERROR; }
+			else { win_wheel(view, &window.wheel_remainder, point.x, point.y, (short)((wparam >> 16) & 0xffff)); }
 		case 0x2a3: // WM_MOUSELEAVE
 			view.pointer_move(-1, -1);
 		case 0x215: // WM_CAPTURECHANGED

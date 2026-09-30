@@ -1,4 +1,4 @@
-"""Exercise blank windows and the counter example against a simulated X server."""
+"""Exercise native rendering and input against a simulated X server."""
 import json
 import os
 from pathlib import Path
@@ -15,6 +15,8 @@ EXAMPLE = ROOT / "examples/window"
 BINARY = EXAMPLE / "build/window"
 BLANK_BINARY = ROOT / "build/blank_window"
 KEYBOARD_BINARY = ROOT / "build/keyboard_window"
+SCROLL_BINARY = ROOT / "build/scroll_window"
+COUNTER_BINARY = ROOT / "build/counter_window"
 
 
 def read_exact(connection, count):
@@ -54,9 +56,15 @@ class X11IntegrationTests(unittest.TestCase):
         subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/keyboard_window.c3"),
                         "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(KEYBOARD_BINARY),
                         "--obj-out", str(ROOT / "build")], check=True)
+        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/scroll_window.c3"),
+                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(SCROLL_BINARY),
+                        "--obj-out", str(ROOT / "build")], check=True)
+        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/counter_window.c3"),
+                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(COUNTER_BINARY),
+                        "--obj-out", str(ROOT / "build")], check=True)
 
-    def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False):
-        widgets = widgets or keyboard
+    def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False, scrolling=False):
+        widgets = widgets or keyboard or scrolling
         errors = []
         with tempfile.TemporaryDirectory() as temp, socket.socket(socket.AF_UNIX) as server:
             # Reserve a unique Linux abstract X socket without touching /tmp.
@@ -169,13 +177,17 @@ class X11IntegrationTests(unittest.TestCase):
                             elif opcode == 8:
                                 self.assertEqual(struct.unpack_from("<I", request, 4)[0], window)
                                 self.assertEqual(properties[100], (4, 32, struct.pack("<I", 101)))
-                                self.assertEqual(properties[39], (31, 8, b"ui keyboard test 0" if keyboard else b"Native C3 window"))
-                                self.assertEqual(properties[102], (103, 8, b"ui keyboard test 0" if keyboard else b"Native C3 window"))
+                                title = b"ui scroll test" if scrolling else b"ui keyboard test 0" if keyboard else b"Native C3 window"
+                                self.assertEqual(properties[39], (31, 8, title))
+                                self.assertEqual(properties[102], (103, 8, title))
                                 break
                             else:
                                 self.fail(f"unexpected X11 opcode {opcode}")
                         if keyboard:
                             self.keyboard_scenario(connection, window, sequence, keycodes, mode)
+                            return
+                        if scrolling:
+                            self.scroll_scenario(connection, window, keycodes)
                             return
                         if widgets:
                             stage = 0
@@ -305,7 +317,7 @@ class X11IntegrationTests(unittest.TestCase):
             thread = threading.Thread(target=serve, daemon=True)
             thread.start()
             environment = {**os.environ, "DISPLAY": f":{number}.0", "XAUTHORITY": str(authority)}
-            result = subprocess.run([str(KEYBOARD_BINARY if keyboard else BINARY if widgets else BLANK_BINARY)], env=environment,
+            result = subprocess.run([str(SCROLL_BINARY if scrolling else KEYBOARD_BINARY if keyboard else COUNTER_BINARY if widgets else BLANK_BINARY)], env=environment,
                                     capture_output=True, text=True, timeout=8)
             thread.join(6)
             self.assertFalse(thread.is_alive(), "test server did not finish")
@@ -313,6 +325,122 @@ class X11IntegrationTests(unittest.TestCase):
                 errors[0].add_note(f"client exit={result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}")
                 raise errors[0]
             return result
+
+    def scroll_scenario(self, connection, window, keycodes):
+        clips = {}
+        current_clip = None
+        foreground = None
+        paper_fills = []
+        text_positions = []
+
+        def request():
+            nonlocal current_clip, foreground
+            header = read_exact(connection, 4)
+            opcode, _, words = struct.unpack("<BBH", header)
+            data = header + read_exact(connection, words * 4 - 4)
+            self.assertIn(opcode, (56, 59, 70, 75))
+            if opcode == 59:
+                current_clip = struct.unpack_from("<hhHH", data, 12)
+            elif opcode == 56:
+                foreground = struct.unpack_from("<I", data, 12)[0]
+            elif opcode == 70:
+                x, y, width, height = struct.unpack_from("<hhHH", data, 12)
+                cx, cy, cw, ch = current_clip
+                self.assertTrue(cx <= x <= x + width <= cx + cw)
+                self.assertTrue(cy <= y <= y + height <= cy + ch)
+                if foreground == 0xFFFFFF:
+                    paper_fills.append((x, y, width, height))
+            elif opcode == 75:
+                label = data[18:18 + data[16] * 2].decode("utf-16-be")
+                clips[label] = current_clip
+                x, baseline = struct.unpack_from("<hh", data, 12)
+                text_positions.append((label, x, baseline, current_clip))
+
+        while "Outer filler" not in clips:
+            request()
+        self.assertNotIn("Last", clips)
+        first, inspector, resetter = clips["First"], clips["Inspect"], clips["Reset scroll"]
+        inner = (first[0] - 6, first[1] - 6, 300, 100)
+        timestamp = 1000
+
+        def event(kind, detail, rect=None, shift=False):
+            nonlocal timestamp
+            timestamp += 10
+            data = bytearray(32)
+            data[:2] = bytes([kind | 0x80, detail])
+            struct.pack_into("<I", data, 4, timestamp)
+            struct.pack_into("<I", data, 12, window)
+            if rect:
+                x, y, width, height = rect
+                struct.pack_into("<hh", data, 24, x + width // 2, y + height // 2)
+            struct.pack_into("<H", data, 28, int(shift))
+            connection.sendall(data)
+
+        def click(rect):
+            for kind in (4, 5):
+                event(kind, 1, rect)
+
+        def wheel(button=5):
+            for kind in (4, 5):
+                event(kind, button, first)
+
+        def key(symbol, shift=False):
+            for kind in (2, 3):
+                event(kind, keycodes[symbol], shift=shift)
+
+        click(inspector)
+        wheel()
+        click(inspector)
+        click(first)  # The former button location now contains clipped filler.
+        click(inspector)
+        wheel(4)
+        click(inspector)
+        for _ in range(4):
+            wheel()
+        click(inspector)
+        wheel()
+        click(inspector)
+        event(5, 4, first)  # An isolated wheel release must not scroll or click.
+        click(inspector)
+        click(resetter)
+        key(0xFF09)
+        key(0xFF09)
+        key(0xFF0D)
+        key(0xFF09)
+        key(0xFF0D)
+        key(0xFF09, shift=True)
+        key(0xFF0D)
+        close = bytearray(32)
+        close[:2] = bytes([33, 32])
+        struct.pack_into("<III", close, 4, window, 100, 101)
+        connection.sendall(close)
+        while True:
+            try:
+                request()
+            except EOFError:
+                break
+        self.assertIn(inner, paper_fills)  # Scroll damage clears the full old viewport.
+        self.assertEqual(paper_fills.count((0, 0, 800, 600)), 1)
+        self.assertIn("Last", clips)
+        self.assertIn("Tail", clips)
+        for label, _, baseline, clip in text_positions:
+            # Font ascent=10/descent=3: scrolled text wholly outside its clip
+            # must never reappear through INT16 wrapping or spurious requests.
+            self.assertGreater(baseline + 3, clip[1], (label, baseline, clip))
+            self.assertLess(baseline - 10, clip[1] + clip[3], (label, baseline, clip))
+
+    def test_scroll_wheel_nested_routing_focus_and_clipped_damage(self):
+        result = self.run_server(scrolling=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        states = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([(state["source"], state["inner_offset"], state["outer_offset"]) for state in states[:8]],
+                         [("inspect", 0, 0), ("inspect", 40, 0), ("inspect", 40, 0),
+                          ("inspect", 0, 0), ("inspect", 144, 0), ("inspect", 144, 40),
+                          ("inspect", 144, 40), ("reset", 0, 0)])
+        self.assertEqual([state["first_clicks"] for state in states], [0] * 11)
+        self.assertEqual([(state["source"], state["last_clicks"], state["tail_clicks"])
+                          for state in states[8:]], [("last", 1, 0), ("tail", 1, 1), ("last", 2, 1)])
+        self.assertTrue(states[8]["focused_last"] and states[9]["focused_tail"] and states[10]["focused_last"])
 
     def keyboard_scenario(self, connection, window, sequence, keycodes, mode):
         # Read real renderer clips for clicks and count every request, including

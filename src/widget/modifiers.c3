@@ -9,6 +9,20 @@ alias Predicate = fn bool(Context);
 
 module ui;
 
+macro Widget* View.@scroll_column(&self, Layout layout = {}; @body(Widget* column))
+{
+	Widget* column = self.scroll_column(layout);
+	@body(column);
+	return column;
+}
+
+macro Widget* Widget.@scroll_column(&self, Layout layout = {}; @body(Widget* column))
+{
+	Widget* column = self.scroll_column(layout);
+	@body(column);
+	return column;
+}
+
 // Modifiers configure the widget they are called on and return it, so they
 // chain. Each takes a context pointer with a stable address (usually a State or
 // an application struct) and either reads a State directly or calls a lambda.

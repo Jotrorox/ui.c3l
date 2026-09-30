@@ -19,7 +19,12 @@
     "tests/modifiers.c3",
     "tests/keyboard.c3",
     "tests/x11_keyboard.c3",
-    "tests/windows_keyboard.c3"
+    "tests/windows_keyboard.c3",
+    "tests/scroll.c3",
+    "tests/scroll_input.c3",
+    "tests/x11_scroll.c3",
+    "tests/windows_scroll.c3",
+    "tests/scroll_reveal.c3"
   ],
   "build-dir": "build",
   "output": "build",

@@ -6,14 +6,16 @@ struct Rect { int x; int y; int width; int height; }
 
 fn bool Rect.empty(self) => self.width <= 0 || self.height <= 0;
 fn bool Rect.contains(self, int x, int y) =>
-	x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height;
+	!self.empty() && x >= self.x && y >= self.y &&
+	(long)x < (long)self.x + self.width && (long)y < (long)self.y + self.height;
 
 fn Rect Rect.intersect(self, Rect other)
 {
 	int x = math::max(self.x, other.x);
 	int y = math::max(self.y, other.y);
-	return { x, y, math::max(0, math::min(self.x + self.width, other.x + other.width) - x),
-		math::max(0, math::min(self.y + self.height, other.y + other.height) - y) };
+	return { x, y,
+		(int)math::clamp(math::min((long)self.x + self.width, (long)other.x + other.width) - x, 0L, (long)int::max),
+		(int)math::clamp(math::min((long)self.y + self.height, (long)other.y + other.height) - y, 0L, (long)int::max) };
 }
 
 alias MeasureText = fn Size(void* context, String text);
@@ -51,6 +53,9 @@ struct View
 
 fn void View.invalidate(&self, Rect rect)
 {
+	// Damage is always drawable viewport geometry, even when a descendant's
+	// signed bounds lie far outside it. This also bounds the union arithmetic.
+	rect = rect.intersect({ 0, 0, self.width, self.height });
 	if (rect.empty()) return;
 	if (self.damage.empty()) { self.damage = rect; return; }
 	int x = math::min(self.damage.x, rect.x);

@@ -1,11 +1,15 @@
-This example builds a Checkbox and a nested counter section once, using `@` modifiers. **Show counter**
-collapses or restores the section. **Increment** changes its reactive label;
-**Reset** is reactively disabled at zero. Use **Tab** / **Shift+Tab** to focus
-controls and **Enter** / **Space** to activate them. Both keys toggle Checkboxes.
-Resize the window to see the content stay vertically centered, the counter
-container stretch across the viewport, its label stay horizontally centered,
-and the action row keep its buttons at the right edge. Hiding the counter
-recenters the remaining Checkbox.
+This example builds a 360-pixel outer scroll column and a 128-pixel nested
+scroll column once, using `@` modifiers. Scroll with the mouse wheel, or use
+**Tab** / **Shift+Tab** to reveal and focus offscreen controls. The nested list
+consumes wheel input until it reaches the requested end; the next wheel event
+can move the outer list. **Enter** / **Space** activates a focused control.
+
+The toolbar stays above the list. **Top** and **Bottom** use the programmatic
+scrolling API. Item buttons change the reactive counter; **Reset** is disabled
+at zero. **Show extra rows** changes the outer content's height without
+recreating widgets. Try hiding those rows while scrolled to the bottom to see
+the offset clamp to the smaller extent. Resize the window to see automatic
+widths stretch while viewport heights stay fixed.
 
 From the repository root:
 
@@ -19,8 +23,8 @@ Close the window to exit and release its widgets and bindings.
 ## Modifiers
 
 Widgets are created by plain methods (`text()`, `button()`, `checkbox()`,
-`row()`, `column()`) and configured by `@` modifiers. A modifier changes the
-widget it is called on and returns it, so modifiers chain:
+`row()`, `column()`, `scroll_column()`) and configured by `@` modifiers. A modifier
+changes the widget it is called on and returns it, so modifiers chain:
 
 ```c3
 struct Counter
@@ -64,16 +68,16 @@ given `&app`. Lambdas cannot capture locals; reach state through the context.
 | `@on_click` | `(&ctx, fn (c) { ... })` on Buttons. |
 | `@on_change` | `(&ctx, fn (c, checked) { ... })` on Checkboxes; replaces the `@checked(&state)` writer. |
 
-`@row` and `@column` on a View or container take a trailing body with the new
-container, then return it. Format strings must be compile-time constants.
+`@row`, `@column`, and `@scroll_column` on a View or container take a trailing
+body with the new container, then return it. Format strings must be compile-time constants.
 Wrong context or lambda types are compile errors. Modifiers are thin macros over
 the `void*` API below and follow the same binding, ownership, and lifetime rules.
 
 ## Building a tree
 
 `View.text()` and `View.button()` still add children to an implicit root Column.
-`View.row()` and `View.column()` return stable `Widget*` container handles.
-Containers expose the same creation methods, including `checkbox()`. The Button
+`View.row()`, `View.column()`, and `View.scroll_column()` return stable `Widget*`
+container handles. Containers expose the same creation methods, including `checkbox()`. The Button
 handler is optional, which lets `@on_click` attach it. The underlying
 callback API takes `void*` contexts:
 
@@ -122,8 +126,10 @@ Designated initializers and default layouts keep their existing behavior.
 | `cross_align` | `START`, `CENTER`, `END`, or `STRETCH` for each visible child. |
 
 Dimension and spacing values must be between 0 and 65535. A nonzero maximum must
-be at least its minimum. Layout sums and coordinates saturate at 65535. Padding and gap must be
-zero on Text, Button, and Checkbox widgets, and both alignment fields must be
+be at least its minimum. Preferred dimensions and ordinary layout coordinates
+saturate at 65535; scroll content extent is tracked separately, and descendant
+coordinates within scroll subtrees may be negative.
+Padding and gap must be zero on Text, Button, and Checkbox widgets, and both alignment fields must be
 `START` on these leaves. Leaves can still have size constraints and are aligned
 by their parent. Alignment values come from `ui::Alignment`; `STRETCH` is invalid
 for `main_align`, and unknown enum values are rejected. Zero is the automatic
@@ -160,14 +166,15 @@ main-axis size or its cached preferred size. Empty containers still measure
 their padding; alignment adds no intrinsic size.
 
 All alignment defaults are `START`, preserving the original top-left geometry.
-There is no weighted growth, wrapping, proportional shrinking, or scrolling.
+There is no weighted growth, wrapping, or proportional shrinking.
 Overflow is clipped to **every ancestor's padded content rectangle**. Partly
-visible controls accept clicks only in their visible portion. Fully clipped,
-hidden, or disabled controls are skipped during depth-first keyboard focus traversal.
+visible controls accept clicks only in their visible portion. Hidden or disabled
+controls are skipped during depth-first keyboard focus traversal. Fully clipped
+controls are also skipped unless scrolling can reveal them, as described below.
 Disabling a container also disables its descendants.
 
-The implicit root is always a Column that fills the viewport, with padding 16,
-gap 8, and `START` alignment on both axes for compatibility.
+The implicit root is always a non-scrolling Column that fills the viewport, with
+padding 16, gap 8, and `START` alignment on both axes for compatibility.
 `view.set_root_spacing(padding = 16, gap = 8)` changes its spacing independently
 of `view.set_root_alignment(main_align = START, cross_align = START)`.
 Both return `false` without changing anything for invalid options. The root
@@ -192,6 +199,119 @@ constraints, padding, and gaps invalidate intrinsic measurements through their
 ancestors but still reuse unchanged text metrics. Alignment never changes
 intrinsic measurement. Runtime changes damage the old and new visible geometry
 and reconcile hover, pressed controls, and keyboard focus after layout.
+
+## Vertical scrolling
+
+`View.scroll_column(layout = {})` and `Widget.scroll_column(layout = {})`
+create explicit vertical scrolling containers. Their matching `@scroll_column`
+macros take the same trailing body as `@column`. They accept every valid
+container `Layout` option and expose the same child creation, reparenting,
+visibility, and enabled APIs as Rows and Columns.
+
+```c3
+Widget* list = view.scroll_column({ .height = 180, .padding = 8, .gap = 4 });
+for (int i = 0; i < 20; i++) list.button("Another item");
+list.scroll_to(80);                  // Absolute pixels from the top.
+list.scroll_by(-40);                 // Negative moves toward the top.
+int offset = list.scroll_offset();   // Current clamped offset.
+int extent = list.scroll_extent();   // Maximum offset, not content height.
+list.scroll_to(extent);              // Move to the bottom.
+```
+
+The viewport's preferred size is measured like a Column: sum visible children's
+preferred heights and intervening gaps, take the largest preferred width, add
+padding, then apply explicit sizes and min/max. Its parent places this preferred
+size with the existing cross-axis cap and stretch rules. Set `height` or
+`max_height` to bound the viewport; an automatic height grows with content up to
+the dimension limit. Ordinary ancestors can further clip a viewport without
+resizing it or changing its extent. The implicit root never starts scrolling
+automatically.
+
+Content height is the sum of the immediate visible children's constrained
+preferred heights plus one gap between each pair. A nested scroll column
+contributes its viewport height to this sum. The maximum offset is
+`max(0, content_height - max(0, viewport_height - 2 * padding))`. It can exceed
+65535 even though individual layout dimensions and spacing cannot. Padding
+stays stationary: scrolling subtracts the offset from child positions inside
+the viewport's padded content rectangle, and each ancestor's clipping still
+applies. Content can have negative coordinates when scrolled above the viewport.
+Scroll content sums saturate at 1,073,741,823 pixels, with signed descendant
+coordinates clamped to plus or minus that limit. Offsets and relative deltas use
+wider intermediate arithmetic to avoid overflow. The limit is a deterministic
+arithmetic bound, not support for arbitrarily large content or virtualized lists.
+
+`main_align` places short content at the start, center, or end of the available
+padded height with offset zero. Overflow starts at the top before subtracting
+the scroll offset, regardless of alignment. `cross_align` uses the normal Column
+rules, including automatic-width stretch, explicit-width opt-out, maximum caps,
+and available width winning over minimum width. Neither alignment nor scrolling
+changes cached preferred sizes.
+
+Hidden children contribute neither height nor gaps. An empty list has extent
+zero and measures only its padding before constraints. Short content also has
+extent zero. If padding consumes the viewport's height, the available height is
+zero and extent equals content height, but descendants remain clipped. A
+zero-width or zero-height visible region cannot receive wheel input or reveal
+controls. Scrolling does not bypass clipping or create additional space.
+
+Offsets start at zero. `scroll_to(int)` and `scroll_by(int)` clamp requests to
+`[0, scroll_extent()]`, including negative requests and very large deltas.
+Both return `true` for accepted calls on scroll columns, including clamped
+requests and no-ops; on every other widget they return `false` without changes.
+`scroll_offset()` and `scroll_extent()` return zero on non-scrolling widgets.
+There are no corresponding root-scrolling methods on `View`.
+
+On scroll columns, these methods flush pending reactive and layout work before
+accessing geometry; scroll mutations place the result immediately. Calls on
+other widgets return without flushing or changing the View. Scroll operations
+and geometry queries cannot run inside binding callbacks, which must remain
+pure reads of application state. Visible containers reclamp after resize,
+content growth or shrinkage, child visibility changes, removal, and
+reparenting. Offsets belong to the container and stay with its stable handle
+when it moves. Hidden scroll containers retain their offset and cached extent;
+clamping to changed content waits until restoration. Removing a container
+destroys its scroll state with the rest of its subtree.
+Explicit scroll calls on a hidden container are accepted and clamp against its
+cached extent; restoration then clamps again against the current content.
+
+Offset changes require placement, clipping, input reconciliation, and painting,
+and reuse cached text and intrinsic measurements. Pending content or constraint
+changes still perform their usual measurements before scrolling. Both old and
+new visible content are damaged, so repaint clears exposed areas. Damage remains
+a single union rectangle.
+
+### Wheel routing and pointer state
+
+`view.scroll_wheel(x, y, delta)` accepts client-coordinate pointer positions
+and signed vertical pixels: positive scrolls down, negative scrolls up. It
+returns `true` only if an offset moved. Pending changes are flushed before
+targeting. The innermost logically visible and enabled scroll viewport under
+the pointer that can move in the requested direction receives the event; when
+it cannot move, its scroll ancestors are tried. The hit region includes the
+viewport's padding, intersected with ancestor clipping. Disabled ancestors
+disable wheel targeting as well as their controls.
+
+Exactly one viewport consumes an event. If it reaches its end partway through
+the delta, the unused delta is discarded; it does not also scroll an ancestor.
+Further input in that direction can bubble to an ancestor. No movement means no
+consumption. Wheel events never count as Button or Checkbox press/release.
+
+X11 Button 4 scrolls up 40 pixels and Button 5 scrolls down 40 pixels. Windows
+`WM_MOUSEWHEEL` converts a positive delta of 120 to 40 pixels upward, and a
+negative delta to downward movement. Partial Windows deltas accumulate the
+fractional pixel remainder across events for that native window's lifetime;
+they are not rounded to full wheel notches. The remainder resets when the native
+window closes or reopens. This is a fixed pixel step, independent of the OS
+lines-per-notch preference. Horizontal wheel input is outside this milestone.
+
+Moving a scroll offset cancels a pending mouse press, recomputes hover at the
+last pointer position, and drops focus if the focused control becomes fully
+clipped. A still-partly-visible focused control stays focused. A release at an
+old pre-scroll position cannot activate a control. Held activation keys keep
+their existing physical-key lifetime across scrolling and focus changes.
+
+Horizontal scrolling, scrollbars, smooth animation, touch gestures, wrapping,
+weighted growth, theming, and text input remain future work.
 
 ## Reactive properties and visibility
 
@@ -299,6 +419,11 @@ widgets. Damage remains one union rectangle and painting scans the tree.
 The backends retain their existing text limitations: core X11 `fixed` font with
 missing-glyph substitution on Linux, GDI on Windows, single-line UTF-8 labels
 up to 4096 bytes, and no general shaping, font fallback, or accessibility API.
+The X11 renderer clips drawing to the top-left 32767 by 32767 pixels to stay
+within core protocol coordinate limits. Large scroll offsets still work because
+visible descendants are translated into viewport coordinates before drawing;
+offscreen coordinates are never narrowed by wrapping into that visible area.
+
 ## Keyboard behavior
 
 Space and Enter activate a focused Button or toggle a focused Checkbox on the
@@ -310,6 +435,16 @@ not let the held key activate a replacement control. Callback self-removal and
 bound Checkbox proposals follow the ownership rules above.
 
 Tab and Shift+Tab traverse eligible controls in depth-first order and wrap.
+An enabled, logically visible Button or Checkbox outside a scroll viewport can
+be a candidate if scrolling can reveal it. Before assigning focus, traversal
+reveals the candidate through its scroll ancestors, from inner to outer.
+It moves the minimum distance to the nearer necessary edge: an item above the
+viewport aligns its top, and an item below aligns its bottom. A control taller
+than the available height aligns its top when chosen by traversal. Ordinary
+ancestor clips still apply: a control that remains fully clipped by a non-scrolling ancestor,
+or has no visible width or height after revealing, is skipped. Scrolling does
+not make hidden or disabled controls eligible.
+
 **Tab repeats intentionally**, including while an activation key remains held.
 `view.activate_focused()` is an explicit programmatic action: each call can
 activate, independently of native key state. Native adapters use `key_down()` /
@@ -358,15 +493,19 @@ It requires a new destination and never overwrites an existing installation.
 ```sh
 c3c test
 c3c test -O3 --build-dir /tmp/ui-c3-release-test --output-dir /tmp/ui-c3-release-test
+c3c test --sanitize=address --build-dir /tmp/ui-c3-asan-test --output-dir /tmp/ui-c3-asan-test
 c3c build --path examples/window
 python3 -m unittest discover -s tests -v
 ```
 
 C3 tests cover bindings, typed modifiers, independent property cleanup, layout,
-alignment and stretch, cached placement, shared keyboard lifecycle, callback
-removal, X11 event translation, and (when built on Windows)
-Win32 repeat metadata. The default Python suite runs simulated X11 tests on
-Linux and skips desktop tests. Simulation includes complete key cycles, explicit
+alignment and stretch, scroll extents and clamping, nested routing and focus
+reveal, negative coordinates and clipping, reactive resize and reparenting,
+cached placement and damage, shared keyboard lifecycle, callback removal,
+X11 event translation, and (when built on Windows) Win32 repeat metadata and
+partial wheel deltas. AddressSanitizer requires a supported compiler/runtime.
+The default Python suite runs simulated X11 tests on Linux and skips desktop
+tests. Simulation includes complete key cycles, explicit
 repeat pairs, mapping changes with changed strides, fragmented/interleaved
 traffic, malformed replies, and disconnect cleanup.
 
@@ -400,6 +539,9 @@ complete press/release cycles and explicit repeat metadata. These validate nativ
 backend dispatch and rendering, not physical keyboard hardware or IME behavior.
 The alignment fixture checks centered content and stretched containers with native
 font metrics, resized and runtime-moved action targets, and reactive label growth.
+The scrolling fixture checks native wheel dispatch, nested boundary bubbling,
+clipped mouse targets, and keyboard reveal with native text metrics. These
+fixtures are regression checks; cross-compilation alone does not run them.
 
 [CI](../../.github/workflows/test.yml) configures Linux and Windows C3 tests,
 optimized tests, and example builds. Linux additionally runs simulation and the
@@ -420,6 +562,8 @@ c3c compile-only tests/fixtures/checkbox_window.c3 --libdir .. --lib ui \
 c3c compile-only tests/fixtures/keyboard_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
 c3c compile-only tests/fixtures/alignment_window.c3 --libdir .. --lib ui \
+  --target windows-x64 --obj-out /tmp/ui-c3-win-check
+c3c compile-only tests/fixtures/scroll_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
 c3c test --target windows-x64 -C --suppress-run
 ```

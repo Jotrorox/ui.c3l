@@ -22,6 +22,9 @@ struct Layout
 }
 
 const int LAYOUT_LIMIT = 65535;
+// Leave headroom for native int rectangle endpoints and rendering insets.
+// Scroll content and signed positions are independent of layout dimensions.
+const int COORD_LIMIT = 0x3fffffff;
 const int CHECKBOX_SIZE = 16;
 const int CHECKBOX_PADDING = 4;
 const int CHECKBOX_GAP = 8;
@@ -44,8 +47,12 @@ fn bool valid_alignment(Alignment main_align, Alignment cross_align) @private =>
 
 fn int layout_add(int a, int b) @private => math::min(LAYOUT_LIMIT, a + b);
 
-fn Rect inset(Rect rect, int padding) @private => {
-	layout_add(rect.x, padding), layout_add(rect.y, padding),
+fn int coordinate(long value) @private => (int)math::clamp(value, -(long)COORD_LIMIT, (long)COORD_LIMIT);
+fn int position_add(int a, int b, bool scrolling) @private =>
+	scrolling ? coordinate((long)a + b) : layout_add(a, b);
+
+fn Rect inset(Rect rect, int padding, bool scrolling = false) @private => {
+	position_add(rect.x, padding, scrolling), position_add(rect.y, padding, scrolling),
 	math::max(0, rect.width - padding * 2), math::max(0, rect.height - padding * 2),
 };
 
@@ -144,10 +151,16 @@ fn void Widget.measure(&self)
 	if (self.is_container())
 	{
 		bool preceding;
+		int content_height;
 		for (Widget* child = self.first; child; child = child.next)
 		{
 			if (child.hidden) continue;
 			child.measure();
+			if (self.kind == SCROLL_COLUMN)
+			{
+				content_height = coordinate((long)content_height + child.desired.height +
+					(preceding ? self.layout.gap : 0));
+			}
 			if (self.kind == ROW)
 			{
 				size.width = layout_add(size.width, child.desired.width);
@@ -161,6 +174,11 @@ fn void Widget.measure(&self)
 				size.width = math::max(size.width, child.desired.width);
 			}
 			preceding = true;
+		}
+		if (self.kind == SCROLL_COLUMN && self.content_height != content_height)
+		{
+			self.content_height = content_height;
+			self.request_layout(); // A fixed viewport can have a changing extent.
 		}
 		size.width = layout_add(size.width, self.layout.padding * 2);
 		size.height = layout_add(size.height, self.layout.padding * 2);
@@ -223,7 +241,8 @@ fn int cross_size(Widget* child, bool row, int available, Alignment alignment) @
 // Shared by explicit containers and the implicit root Column. Main-axis sizes
 // keep their preferred size on overflow. Available cross space wins over min.
 fn void place_children(Widget* first, bool row, Rect content, Rect clip, int gap,
-	Alignment main_align, Alignment cross_align, bool changed) @private
+	Alignment main_align, Alignment cross_align, bool changed, bool scrolling = false,
+	int scroll_offset = 0, int scroll_content = -1) @private
 {
 	int used;
 	if (changed && main_align != START)
@@ -237,8 +256,11 @@ fn void place_children(Widget* first, bool row, Rect content, Rect clip, int gap
 			preceding = true;
 		}
 	}
-	int cursor = layout_add(row ? content.x : content.y,
-		alignment_offset(main_align, row ? content.width : content.height, used));
+	if (scroll_content >= 0) used = scroll_content;
+	// Keep the untransformed cursor separate: scrolling a long list must not
+	// saturate early and lose the position of its later children.
+	long cursor = (long)(row ? content.x : content.y) - scroll_offset +
+		alignment_offset(main_align, row ? content.width : content.height, used);
 	for (Widget* child = first; child; child = child.next)
 	{
 		if (child.hidden) { collapse_geometry(child); continue; }
@@ -248,20 +270,23 @@ fn void place_children(Widget* first, bool row, Rect content, Rect clip, int gap
 			int available = row ? content.height : content.width;
 			int cross = cross_size(child, row, available, cross_align);
 			int offset = alignment_offset(cross_align, available, cross);
-			rect = row ? (Rect) { cursor, layout_add(content.y, offset), child.desired.width, cross } :
-				(Rect) { layout_add(content.x, offset), cursor, cross, child.desired.height };
+			int main_position = scrolling ? coordinate(cursor) : (int)math::min(cursor, (long)LAYOUT_LIMIT);
+			rect = row ? (Rect) { main_position, position_add(content.y, offset, scrolling), child.desired.width, cross } :
+				(Rect) { position_add(content.x, offset, scrolling), main_position, cross, child.desired.height };
 		}
-		child.place(rect, clip);
-		cursor = layout_add(cursor, layout_add(row ? child.desired.width : child.desired.height, gap));
+		child.place(rect, clip, scrolling);
+		cursor = scrolling ? math::min((long)COORD_LIMIT, cursor + (row ? child.desired.width : child.desired.height) + gap) :
+			math::min((long)LAYOUT_LIMIT, cursor + layout_add(row ? child.desired.width : child.desired.height, gap));
 	}
 }
 
 // Every ancestor clips descendants to its padded content rectangle.
-fn void Widget.place(&self, Rect bounds, Rect ancestor_clip)
+fn void Widget.place(&self, Rect bounds, Rect ancestor_clip, bool scrolling = false)
 {
 	if (self.hidden) { collapse_geometry(self); return; }
 	Rect visible = bounds.intersect(ancestor_clip);
-	bool changed = !rect_equal(bounds, self.bounds) || !rect_equal(visible, self.visible);
+	scrolling = scrolling || self.kind == SCROLL_COLUMN;
+	bool changed = !rect_equal(bounds, self.bounds) || !rect_equal(visible, self.visible) || self.scroll_space != scrolling;
 	if (!changed && !self.layout_dirty && !self.subtree_layout_dirty) return;
 	if (changed && !self.is_container())
 	{
@@ -270,12 +295,19 @@ fn void Widget.place(&self, Rect bounds, Rect ancestor_clip)
 	}
 	self.bounds = bounds;
 	self.visible = visible;
+	self.scroll_space = scrolling;
 	if (self.is_container())
 	{
-		Rect content = inset(bounds, self.layout.padding);
+		Rect content = inset(bounds, self.layout.padding, scrolling);
 		Rect clip = content.intersect(visible);
+		if (self.kind == SCROLL_COLUMN)
+		{
+			self.scroll_max = math::max(0, self.content_height - content.height);
+			set_scroll_offset(self, math::min(self.scroll_y, self.scroll_max));
+		}
 		place_children(self.first, self.kind == ROW, content, clip, self.layout.gap,
-			self.layout.main_align, self.layout.cross_align, changed || self.layout_dirty);
+			self.layout.main_align, self.layout.cross_align, changed || self.layout_dirty, scrolling,
+			self.scroll_y, self.kind == SCROLL_COLUMN ? self.content_height : -1);
 	}
 	self.layout_dirty = false;
 	self.subtree_layout_dirty = false;
