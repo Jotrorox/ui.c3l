@@ -16,6 +16,7 @@ BINARY = EXAMPLE / "build/window"
 BLANK_BINARY = ROOT / "build/blank_window"
 KEYBOARD_BINARY = ROOT / "build/keyboard_window"
 SCROLL_BINARY = ROOT / "build/scroll_window"
+SCROLLBAR_BINARY = ROOT / "build/scrollbar_window"
 COUNTER_BINARY = ROOT / "build/counter_window"
 
 
@@ -59,12 +60,15 @@ class X11IntegrationTests(unittest.TestCase):
         subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/scroll_window.c3"),
                         "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(SCROLL_BINARY),
                         "--obj-out", str(ROOT / "build")], check=True)
+        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/scrollbar_window.c3"),
+                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(SCROLLBAR_BINARY),
+                        "--obj-out", str(ROOT / "build")], check=True)
         subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/counter_window.c3"),
                         "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(COUNTER_BINARY),
                         "--obj-out", str(ROOT / "build")], check=True)
 
-    def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False, scrolling=False):
-        widgets = widgets or keyboard or scrolling
+    def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False, scrolling=False, scrollbars=False):
+        widgets = widgets or keyboard or scrolling or scrollbars
         errors = []
         with tempfile.TemporaryDirectory() as temp, socket.socket(socket.AF_UNIX) as server:
             # Reserve a unique Linux abstract X socket without touching /tmp.
@@ -177,7 +181,7 @@ class X11IntegrationTests(unittest.TestCase):
                             elif opcode == 8:
                                 self.assertEqual(struct.unpack_from("<I", request, 4)[0], window)
                                 self.assertEqual(properties[100], (4, 32, struct.pack("<I", 101)))
-                                title = b"ui scroll test" if scrolling else b"ui keyboard test 0" if keyboard else b"Native C3 window"
+                                title = b"ui scrollbar test 0" if scrollbars else b"ui scroll test" if scrolling else b"ui keyboard test 0" if keyboard else b"Native C3 window"
                                 self.assertEqual(properties[39], (31, 8, title))
                                 self.assertEqual(properties[102], (103, 8, title))
                                 break
@@ -185,6 +189,9 @@ class X11IntegrationTests(unittest.TestCase):
                                 self.fail(f"unexpected X11 opcode {opcode}")
                         if keyboard:
                             self.keyboard_scenario(connection, window, sequence, keycodes, mode)
+                            return
+                        if scrollbars:
+                            self.scrollbar_scenario(connection, window, keycodes)
                             return
                         if scrolling:
                             self.scroll_scenario(connection, window, keycodes)
@@ -317,7 +324,7 @@ class X11IntegrationTests(unittest.TestCase):
             thread = threading.Thread(target=serve, daemon=True)
             thread.start()
             environment = {**os.environ, "DISPLAY": f":{number}.0", "XAUTHORITY": str(authority)}
-            result = subprocess.run([str(SCROLL_BINARY if scrolling else KEYBOARD_BINARY if keyboard else COUNTER_BINARY if widgets else BLANK_BINARY)], env=environment,
+            result = subprocess.run([str(SCROLLBAR_BINARY if scrollbars else SCROLL_BINARY if scrolling else KEYBOARD_BINARY if keyboard else COUNTER_BINARY if widgets else BLANK_BINARY)], env=environment,
                                     capture_output=True, text=True, timeout=8)
             thread.join(6)
             self.assertFalse(thread.is_alive(), "test server did not finish")
@@ -325,6 +332,116 @@ class X11IntegrationTests(unittest.TestCase):
                 errors[0].add_note(f"client exit={result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}")
                 raise errors[0]
             return result
+
+    def scrollbar_scenario(self, connection, window, keycodes):
+        clips, fills = {}, []
+        clip, foreground = None, None
+        pixels = bytearray([255]) * (800 * 600)
+
+        def request():
+            nonlocal clip, foreground
+            header = read_exact(connection, 4)
+            opcode, _, words = struct.unpack("<BBH", header)
+            data = header + read_exact(connection, words * 4 - 4)
+            self.assertIn(opcode, (56, 59, 70, 75))
+            if opcode == 59:
+                clip = struct.unpack_from("<hhHH", data, 12)
+            elif opcode == 56:
+                foreground = struct.unpack_from("<I", data, 12)[0]
+            elif opcode == 70:
+                rect = struct.unpack_from("<hhHH", data, 12)
+                x, y, width, height = rect
+                cx, cy, cw, ch = clip
+                self.assertTrue(cx <= x <= x + width <= cx + cw)
+                self.assertTrue(cy <= y <= y + height <= cy + ch)
+                fills.append((rect, foreground))
+                for row in range(y, y + height):
+                    pixels[row * 800 + x:row * 800 + x + width] = bytes([foreground & 255]) * width
+            elif opcode == 75:
+                label = data[18:18 + data[16] * 2].decode("utf-16-be")
+                clips[label] = clip
+
+        while "Outer filler" not in clips:
+            request()
+        # Fixed fixture dimensions deliberately oversize children across the
+        # gutter: native clip rectangles must still exclude track pixels.
+        self.assertEqual(clips["First"], (30, 70, 276, 32))
+        self.assertIn(((306, 70, 12, 33), 0), fills)
+        self.assertEqual(pixels[80 * 800 + 312], 0)  # Solid thumb.
+        self.assertEqual(pixels[120 * 800 + 306], 0)  # Outlined track.
+        self.assertEqual(pixels[120 * 800 + 312], 255)  # Empty track interior.
+
+        def event(kind, detail=1, x=0, y=0, mode=0):
+            data = bytearray(32)
+            data[:2] = bytes([kind | 0x80, detail])
+            struct.pack_into("<I", data, 12, window)
+            struct.pack_into("<hh", data, 24, x, y)
+            data[30] = mode
+            if kind == 10:
+                struct.pack_into("<I", data, 4, window)
+            if kind == 18:
+                struct.pack_into("<I", data, 8, window)
+            connection.sendall(data)
+
+        def click(x, y):
+            event(4, x=x, y=y)
+            event(5, x=x, y=y)
+
+        def inspect():
+            click(60, 32)
+
+        def keyboard_inspect():
+            event(2, keycodes[0xFF0D])
+            event(3, keycodes[0xFF0D])
+
+        inspect()
+        click(312, 150)  # One page is the 88-pixel padded viewport.
+        inspect()
+        event(4, x=312, y=106)  # Thumb after paging starts at y=104.
+        event(6, x=312, y=126)
+        event(8, x=-1, y=-1)  # A leave is not a jump to the top.
+        keyboard_inspect()
+        event(6, x=-100, y=700)
+        event(5, x=-100, y=700)
+        inspect()
+        click(60, 86)  # Former First location, now filler, must not activate.
+        inspect()
+        click(150, 32)  # Reset.
+        for kind in (8, 10, 18):
+            event(4, x=312, y=72)
+            event(kind, x=-1, y=-1, mode=2)
+            event(6, x=-100, y=700)
+            event(5, x=60, y=86)  # Cancellation cannot become a First release.
+            inspect()
+        click(250, 32)  # Reactive shrink removes the track and clears its pixels.
+        # The final native close is deliberately in a fresh active thumb drag.
+        click(250, 32)
+        event(4, x=312, y=72)
+        close = bytearray(32)
+        close[:2] = bytes([33, 32])
+        struct.pack_into("<III", close, 4, window, 100, 101)
+        connection.sendall(close)
+        while True:
+            try:
+                request()
+            except EOFError:
+                break
+        self.assertIn(((306, 125, 12, 33), 0), fills)  # Bottom endpoint.
+        self.assertIn(((24, 64, 300, 100), 0xFFFFFF), fills)  # Exposed content is erased.
+        self.assertEqual(sum(rect == (0, 0, 800, 600) for rect, _ in fills), 1)
+
+    def test_scrollbar_native_drag_page_crossing_cancel_and_render(self):
+        result = self.run_server(scrollbars=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        states = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([s["inner_offset"] for s in states],
+                         [0, 88, 140, 144, 144, 0, 0, 0, 0, 0, 0, 0])
+        self.assertTrue(states[2]["dragging"] and states[2]["scroll_press"])
+        self.assertTrue(all(s["clicks"] == 0 and s["outer_offset"] == 0 for s in states))
+        self.assertEqual(states[9]["inner_extent"], 0)
+        self.assertEqual(states[9]["inner_track"], [0, 0, 0, 0])
+        self.assertEqual(states[-1]["source"], "closed")
+        self.assertFalse(states[-1]["dragging"] or states[-1]["scroll_press"])
 
     def scroll_scenario(self, connection, window, keycodes):
         clips = {}

@@ -16,7 +16,7 @@ fn int main()
 	defer view.free();
 
 	view.set_root_alignment(START, STRETCH);
-	view.text("Wheel over a list; Tab reveals its offscreen controls.");
+	view.text("Drag thumbs, click tracks, or wheel; Tab reveals controls.");
 	view.text().@text(&app.count, "Count: %s");
 	view.@row({ .gap = 8 }; Widget* controls)
 	{
@@ -30,24 +30,32 @@ fn int main()
 	view.@scroll_column({ .height = 360, .padding = 8, .gap = 8, .cross_align = STRETCH }; Widget* list)
 	{
 		app.list = list;
+		list.set_scrollbar();
 		@pool()
 		{
-			for (int i = 1; i <= 3; i++)
+			for (int i = 1; i <= 5; i++)
 			{
 				list.button(string::tformat("Outer item %s (+1)", i))
 					.@on_click(&app.count, fn (c) => c.set(c.get() + 1));
 			}
 		};
-		list.text("Nested list: its wheel bubbles at either end.");
+		list.text("Nested scrollbar: extra rows change its thumb size.");
 		list.@scroll_column({ .height = 128, .padding = 8, .gap = 4, .cross_align = STRETCH }; Widget* nested)
 		{
-			@pool()
+			nested.set_scrollbar();
+			nested.button("Nested item 1 (+10)")
+				.@on_click(&app.count, fn (c) => c.set(c.get() + 10));
+			nested.@column({ .gap = 4, .cross_align = STRETCH }; Widget* extra)
 			{
-				for (int i = 1; i <= 8; i++)
+				extra.@visible(&app.extra);
+				@pool()
 				{
-					nested.button(string::tformat("Nested item %s (+10)", i))
-						.@on_click(&app.count, fn (c) => c.set(c.get() + 10));
-				}
+					for (int i = 2; i <= 8; i++)
+					{
+						extra.button(string::tformat("Nested item %s (+10)", i))
+							.@on_click(&app.count, fn (c) => c.set(c.get() + 10));
+					}
+				};
 			};
 		};
 		list.@column({ .gap = 8, .cross_align = STRETCH }; Widget* extra)
@@ -65,7 +73,7 @@ fn int main()
 		list.button("Last item (+1)").@on_click(&app.count, fn (c) => c.set(c.get() + 1));
 	};
 
-	if (catch error = view.open("Native C3 scrolling", width: 640, height: 520))
+	if (catch error = view.open("Native C3 scrollbars", width: 640, height: 520))
 	{
 		io::eprintfn("Could not open window: %s", error);
 		return 1;

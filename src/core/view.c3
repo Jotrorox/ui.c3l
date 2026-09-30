@@ -29,6 +29,11 @@ struct View
 	Widget* hovered;
 	Widget* pressed;
 	Widget* focused;
+	Widget* scroll_pressed; // Cleared before its target can be detached or freed.
+	bool scroll_press_active; // Release stays consumed even after cancellation.
+	bool scroll_dragging;
+	int scroll_anchor_y;
+	int scroll_anchor_offset;
 	Binding* pending_head;
 	Binding* pending_tail;
 	Rect damage;
@@ -68,6 +73,7 @@ fn void View.resize(&self, int width, int height)
 {
 	assert(!active_binding, "Bindings cannot resize views");
 	if (self.width == width && self.height == height) return;
+	self.cancel_scrollbar();
 	self.width = math::max(0, width);
 	self.height = math::max(0, height);
 	self.layout_dirty = true;

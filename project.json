@@ -24,7 +24,14 @@
     "tests/scroll_input.c3",
     "tests/x11_scroll.c3",
     "tests/windows_scroll.c3",
-    "tests/scroll_reveal.c3"
+    "tests/scroll_reveal.c3",
+    "tests/scrollbar.c3",
+    "tests/scrollbar_input.c3",
+    "tests/scrollbar_updates.c3",
+    "tests/scrollbar_stress.c3",
+    "tests/scrollbar_wheel.c3",
+    "tests/x11_scrollbar.c3",
+    "tests/windows_scrollbar.c3"
   ],
   "build-dir": "build",
   "output": "build",

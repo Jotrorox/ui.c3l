@@ -1,15 +1,18 @@
 This example builds a 360-pixel outer scroll column and a 128-pixel nested
-scroll column once, using `@` modifiers. Scroll with the mouse wheel, or use
-**Tab** / **Shift+Tab** to reveal and focus offscreen controls. The nested list
-consumes wheel input until it reaches the requested end; the next wheel event
-can move the outer list. **Enter** / **Space** activates a focused control.
+scroll column once, using `@` modifiers. Both opt into vertical scrollbars.
+Drag a thumb, click above or below it to move one page, or scroll with the mouse
+wheel. Dragging continues outside the window until release. **Tab** /
+**Shift+Tab** reveals and focuses offscreen controls. The nested list consumes
+wheel input until it reaches the requested end; the next wheel event can move
+the outer list. **Enter** / **Space** activates a focused control.
 
 The toolbar stays above the list. **Top** and **Bottom** use the programmatic
 scrolling API. Item buttons change the reactive counter; **Reset** is disabled
-at zero. **Show extra rows** changes the outer content's height without
-recreating widgets. Try hiding those rows while scrolled to the bottom to see
-the offset clamp to the smaller extent. Resize the window to see automatic
-widths stretch while viewport heights stay fixed.
+at zero. **Show extra rows** changes both lists' content heights without
+recreating widgets. Try hiding those rows while scrolled to the bottom: offsets
+clamp, the outer thumb grows, and the nested scrollbar disappears when only one
+row remains. The reserved gutters keep child widths stable. Resize the window
+to see automatic widths stretch while viewport heights stay fixed.
 
 From the repository root:
 
@@ -167,7 +170,8 @@ their padding; alignment adds no intrinsic size.
 
 All alignment defaults are `START`, preserving the original top-left geometry.
 There is no weighted growth, wrapping, or proportional shrinking.
-Overflow is clipped to **every ancestor's padded content rectangle**. Partly
+Overflow is clipped to **every ancestor's padded content rectangle**, excluding
+any reserved scrollbar gutter. Partly
 visible controls accept clicks only in their visible portion. Hidden or disabled
 controls are skipped during depth-first keyboard focus traversal. Fully clipped
 controls are also skipped unless scrolling can reveal them, as described below.
@@ -210,6 +214,7 @@ visibility, and enabled APIs as Rows and Columns.
 
 ```c3
 Widget* list = view.scroll_column({ .height = 180, .padding = 8, .gap = 4 });
+list.set_scrollbar();                // Optional; reserves a gutter on the right.
 for (int i = 0; i < 20; i++) list.button("Another item");
 list.scroll_to(80);                  // Absolute pixels from the top.
 list.scroll_by(-40);                 // Negative moves toward the top.
@@ -220,8 +225,9 @@ list.scroll_to(extent);              // Move to the bottom.
 
 The viewport's preferred size is measured like a Column: sum visible children's
 preferred heights and intervening gaps, take the largest preferred width, add
-padding, then apply explicit sizes and min/max. Its parent places this preferred
-size with the existing cross-axis cap and stretch rules. Set `height` or
+padding and the optional scrollbar gutter, then apply explicit sizes and min/max.
+Its parent places this preferred size with the existing cross-axis cap and
+stretch rules. Set `height` or
 `max_height` to bound the viewport; an automatic height grows with content up to
 the dimension limit. Ordinary ancestors can further clip a viewport without
 resizing it or changing its extent. The implicit root never starts scrolling
@@ -243,13 +249,15 @@ arithmetic bound, not support for arbitrarily large content or virtualized lists
 `main_align` places short content at the start, center, or end of the available
 padded height with offset zero. Overflow starts at the top before subtracting
 the scroll offset, regardless of alignment. `cross_align` uses the normal Column
-rules, including automatic-width stretch, explicit-width opt-out, maximum caps,
-and available width winning over minimum width. Neither alignment nor scrolling
+rules within the width left after any scrollbar gutter, including automatic-width
+stretch, explicit-width opt-out, maximum caps, and available width winning over
+minimum width. Neither alignment nor scrolling
 changes cached preferred sizes.
 
 Hidden children contribute neither height nor gaps. An empty list has extent
-zero and measures only its padding before constraints. Short content also has
-extent zero. If padding consumes the viewport's height, the available height is
+zero and measures its padding plus any enabled scrollbar gutter before
+constraints. Short content also has extent zero. If padding consumes the
+viewport's height, the available height is
 zero and extent equals content height, but descendants remain clipped. A
 zero-width or zero-height visible region cannot receive wheel input or reveal
 controls. Scrolling does not bypass clipping or create additional space.
@@ -277,8 +285,117 @@ cached extent; restoration then clamps again against the current content.
 Offset changes require placement, clipping, input reconciliation, and painting,
 and reuse cached text and intrinsic measurements. Pending content or constraint
 changes still perform their usual measurements before scrolling. Both old and
-new visible content are damaged, so repaint clears exposed areas. Damage remains
-a single union rectangle.
+new visible content and scrollbar geometry are damaged, so repaint clears
+exposed areas. Damage remains a single union rectangle.
+
+### Optional vertical scrollbars
+
+`Widget.set_scrollbar(bool enabled = true)` opts an explicit scroll column into
+scrollbar display; `set_scrollbar(false)` restores its original geometry. It
+returns `true` on scroll columns, including unchanged assignments. On Text,
+Button, Checkbox, Row, and ordinary Column widgets it returns `false` without
+changes, even when passed `false`. The implicit root has no scrollbar option.
+There is no always-visible mode, additional widget, or separate scrollbar
+binding. Existing scroll columns default to scrollbars disabled and keep their
+previous geometry and behavior.
+
+Enabling the option always adds `SCROLLBAR_WIDTH` (12 pixels) to the intrinsic
+width before explicit width and min/max constraints. This is independent of
+overflow and available space, so displaying the track cannot change measurement
+or feed back into stretch. The gutter stays reserved when the track is absent.
+Changing the option invalidates intrinsic size through ancestors and placement,
+while reusing unchanged text metrics. Scrolling, dragging, and page clicks
+require placement and paint only; they reuse intrinsic and text measurements.
+
+First remove the container's padding. The gutter occupies the rightmost
+`min(12, padded_width)` pixels of that rectangle, immediately inside the right
+padding. The child content rectangle occupies the remaining width and all of
+the padded height. All descendants are clipped to this narrower rectangle, so
+they cannot paint or accept clicks in the gutter. Alignment, stretch, and
+maximum-width constraints operate on this remaining child width. A nested
+scrollbar is also clipped by every ancestor's child content rectangle.
+
+The track spans the gutter's full padded height. Track and thumb appear only
+when the option is enabled, the content overflows vertically, and padded width
+and height are both positive. Ancestor clipping can further hide all or part of
+them. Empty or short content has zero extent and no track. Padding that consumes
+an axis produces no track or thumb. A viewport at most 12 pixels wide after
+padding can devote its entire width to the gutter, leaving no visible children.
+An overflowing track at most 16 pixels tall has a thumb filling its whole height:
+it has no drag travel, but wheel and programmatic scrolling still work.
+
+Let `V` be padded viewport height, `C` content height, `T` track height (`T = V`),
+and `E = max(0, C - V)` maximum scroll offset. For an overflowing track:
+
+```text
+thumb_height = min(T, max(SCROLLBAR_MIN_THUMB, floor(T * V / C)))
+travel = T - thumb_height
+thumb_top = track_top + round_nearest(scroll_offset * travel / E)
+```
+
+`SCROLLBAR_MIN_THUMB` is 16 pixels. Nonnegative position ties round upward. The
+top and bottom offsets map exactly to the corresponding ends of the track;
+zero travel always positions the thumb at the top. Products and divisions use
+64-bit intermediates, including at the separate large-content arithmetic limit.
+Tracks and thumbs use the existing monochrome rendering.
+
+After `view.update()`, `Widget.scrollbar` reports the enabled option, and
+`Widget.scroll_track` / `Widget.scroll_thumb` expose their client-coordinate
+rectangles. Treat these fields as read-only; mutate through `set_scrollbar()`
+and the scroll methods. Both geometry rectangles are empty when there is no
+displayed scrollbar; rendering and targeting additionally intersect them with
+ancestor clipping.
+
+### Thumb dragging and track clicks
+
+A left press first targets the innermost visible scrollbar under the pointer.
+An enabled scrollbar starts dragging on a press within its thumb. The anchor records the
+pointer's initial client Y coordinate and the original scroll offset, preserving
+the grab position without jumping. Each movement computes:
+
+```text
+new_offset = clamp(anchor_offset +
+                   round_nearest((pointer_y - anchor_y) * E / travel), 0, E)
+```
+
+Signed drag ties round away from zero, using 64-bit intermediate arithmetic.
+Zero travel leaves the offset unchanged. Movement depends on the anchored
+vertical delta, not on the pointer's horizontal location or its current position
+within the thumb. Native capture continues motion and release outside the
+viewport and window: Windows uses `SetCapture`, and X11 uses the server's
+automatic button grab. An outside release ends the interaction. Native crossing
+events alone do not move the thumb.
+
+A left press on the track above the thumb subtracts exactly `V` pixels; below
+the thumb it adds exactly `V`, clamped to `[0, E]`. Page size uses the full
+padded viewport height, even when an ancestor clips part of it. This happens
+once on press, without autorepeat or a second step on release. It may move the
+thumb beyond the clicked point; it does not stop early at that point. Pressing
+the thumb never pages. A fully clipped scrollbar cannot be targeted; a disabled
+scrollbar consumes its press without dragging or paging. Scrollbar interactions
+never activate Buttons or Checkboxes beneath
+them, and do not assign widget focus. Existing focus remains while the control
+is still partly visible.
+
+An active drag cancels when the View's viewport resizes, or the target's track,
+clipped track geometry, content extent, or thumb length changes. It also cancels on an
+external offset change (including wheel input or programmatic scrolling); Tab
+or Shift+Tab traversal, even without an offset change; hiding, disabling,
+removing, or reparenting the target or an ancestor;
+disabling its scrollbar; blur or capture loss; and native window close/reopen.
+Reactive changes follow these same rules. The updated layout is still applied
+and its offset clamped. Further pointer movement cannot resume a canceled drag;
+a fresh thumb press is required.
+
+The identity of a scrollbar press remains reserved until release after target
+cancellation or removal. Hover resumes once the target is canceled, even if
+capture loss prevents a release from arriving. A later release remains consumed
+and cannot become a widget click. Blur and native window close/reopen reset the
+whole input lifetime, clearing all pending presses; stale releases remain inert.
+Hover, pending widget presses, and focus reconcile after scrolling; held
+activation keys retain their physical-key lifetime until blur or a window
+lifetime reset. Tab traversal and wheel boundary bubbling keep the rules below
+when scrollbars are enabled.
 
 ### Wheel routing and pointer state
 
@@ -310,8 +427,10 @@ clipped. A still-partly-visible focused control stays focused. A release at an
 old pre-scroll position cannot activate a control. Held activation keys keep
 their existing physical-key lifetime across scrolling and focus changes.
 
-Horizontal scrolling, scrollbars, smooth animation, touch gestures, wrapping,
-weighted growth, theming, and text input remain future work.
+Horizontal scrolling, smooth animation, touch gestures, wheel acceleration,
+wrapping, weighted growth, theming, text input, virtualization, and keyboard
+PageUp/PageDown/Home/End navigation remain future work. Page navigation in this
+milestone means track clicks only.
 
 ## Reactive properties and visibility
 
@@ -499,8 +618,9 @@ python3 -m unittest discover -s tests -v
 ```
 
 C3 tests cover bindings, typed modifiers, independent property cleanup, layout,
-alignment and stretch, scroll extents and clamping, nested routing and focus
-reveal, negative coordinates and clipping, reactive resize and reparenting,
+alignment and stretch, scroll extents and clamping, scrollbar gutter and thumb
+geometry, drag/page input and cancellation, nested routing and focus reveal,
+negative coordinates and clipping, reactive resize and reparenting,
 cached placement and damage, shared keyboard lifecycle, callback removal,
 X11 event translation, and (when built on Windows) Win32 repeat metadata and
 partial wheel deltas. AddressSanitizer requires a supported compiler/runtime.
@@ -510,7 +630,10 @@ repeat pairs, mapping changes with changed strides, fragmented/interleaved
 traffic, malformed replies, and disconnect cleanup.
 
 Desktop tests remain opt-in. On Linux install `xvfb`, the core fixed font (usually
-`xfonts-base`), and `libX11.so.6` **for the Python test driver only**, then run:
+`xfonts-base`), and `libX11.so.6` **for the Python test driver only**. Install
+`libXtst.so.6` (usually `libxtst6`) to also verify actual pointer capture with
+XTEST; that test reports an explicit skip when the library is unavailable.
+Neither test-driver library is a runtime dependency of ui.c3l. Then run:
 
 ```sh
 python3 scripts/test-xvfb.py
@@ -537,15 +660,23 @@ Linux. Fixtures report geometry for mouse targeting; X11 keycodes are queried
 from the server on every cycle. Drivers inject X11 events / Win32 messages with
 complete press/release cycles and explicit repeat metadata. These validate native
 backend dispatch and rendering, not physical keyboard hardware or IME behavior.
+Directed X11 events do not create a server pointer grab. On isolated Xvfb, a
+separate XTEST test creates a real button press and moves/releases outside the
+window, verifying the server's automatic capture and release delivery. That
+test runs only through the isolated runner; ordinary desktop tests use directed
+events and do not verify actual server capture.
 The alignment fixture checks centered content and stretched containers with native
 font metrics, resized and runtime-moved action targets, and reactive label growth.
 The scrolling fixture checks native wheel dispatch, nested boundary bubbling,
-clipped mouse targets, and keyboard reveal with native text metrics. These
+clipped mouse targets, and keyboard reveal with native text metrics. The
+scrollbar fixture adds native thumb dragging, page clicks, cancellation, and
+scrollbar rendering. These
 fixtures are regression checks; cross-compilation alone does not run them.
 
 [CI](../../.github/workflows/test.yml) configures Linux and Windows C3 tests,
 optimized tests, and example builds. Linux additionally runs simulation and the
-isolated native suite; Windows runs desktop tests when its input desktop is
+isolated native suite, installing `libxtst6` for the actual capture test; Windows
+runs desktop tests when its input desktop is
 available. Each job checks out into `ui.c3l` and verifies the pinned compiler.
 A workflow definition is not evidence of a successful hosted CI run.
 
@@ -564,6 +695,8 @@ c3c compile-only tests/fixtures/keyboard_window.c3 --libdir .. --lib ui \
 c3c compile-only tests/fixtures/alignment_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
 c3c compile-only tests/fixtures/scroll_window.c3 --libdir .. --lib ui \
+  --target windows-x64 --obj-out /tmp/ui-c3-win-check
+c3c compile-only tests/fixtures/scrollbar_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
 c3c test --target windows-x64 -C --suppress-run
 ```

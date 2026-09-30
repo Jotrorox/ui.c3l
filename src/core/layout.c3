@@ -177,10 +177,12 @@ fn void Widget.measure(&self)
 		}
 		if (self.kind == SCROLL_COLUMN && self.content_height != content_height)
 		{
+			if (self.owner.scroll_pressed == self) self.owner.cancel_scrollbar();
 			self.content_height = content_height;
 			self.request_layout(); // A fixed viewport can have a changing extent.
 		}
 		size.width = layout_add(size.width, self.layout.padding * 2);
+		if (self.scrollbar) size.width = layout_add(size.width, SCROLLBAR_WIDTH);
 		size.height = layout_add(size.height, self.layout.padding * 2);
 	}
 	else
@@ -285,6 +287,7 @@ fn void Widget.place(&self, Rect bounds, Rect ancestor_clip, bool scrolling = fa
 {
 	if (self.hidden) { collapse_geometry(self); return; }
 	Rect visible = bounds.intersect(ancestor_clip);
+	Rect old_visible = self.visible;
 	scrolling = scrolling || self.kind == SCROLL_COLUMN;
 	bool changed = !rect_equal(bounds, self.bounds) || !rect_equal(visible, self.visible) || self.scroll_space != scrolling;
 	if (!changed && !self.layout_dirty && !self.subtree_layout_dirty) return;
@@ -298,12 +301,15 @@ fn void Widget.place(&self, Rect bounds, Rect ancestor_clip, bool scrolling = fa
 	self.scroll_space = scrolling;
 	if (self.is_container())
 	{
-		Rect content = inset(bounds, self.layout.padding, scrolling);
+		Rect content = self.content_rect();
 		Rect clip = content.intersect(visible);
 		if (self.kind == SCROLL_COLUMN)
 		{
-			self.scroll_max = math::max(0, self.content_height - content.height);
+			int extent = math::max(0, self.content_height - content.height);
+			if (self.owner.scroll_pressed == self && extent != self.scroll_max) self.owner.cancel_scrollbar();
+			self.scroll_max = extent;
 			set_scroll_offset(self, math::min(self.scroll_y, self.scroll_max));
+			self.place_scrollbar(old_visible);
 		}
 		place_children(self.first, self.kind == ROW, content, clip, self.layout.gap,
 			self.layout.main_align, self.layout.cross_align, changed || self.layout_dirty, scrolling,

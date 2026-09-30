@@ -34,7 +34,18 @@ fn void? View.paint(&self, Renderer* renderer, Rect clip)
 	renderer.fill(renderer.context, clip, PAPER)!;
 	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
 	{
-		if (widget.is_container() || !widget.is_visible() || widget.visible.intersect(clip).empty()) continue;
+		if (!widget.is_visible() || widget.visible.intersect(clip).empty()) continue;
+		if (widget.is_container())
+		{
+			Rect track_clip = widget.scroll_track.intersect(widget.visible).intersect(clip);
+			if (!track_clip.empty())
+			{
+				renderer.clip(renderer.context, track_clip)!;
+				renderer.border(widget.scroll_track, INK)!;
+				renderer.fill(renderer.context, widget.scroll_thumb, INK)!;
+			}
+			continue;
+		}
 		renderer.clip(renderer.context, widget.visible.intersect(clip))!;
 		Rect rect = widget.bounds;
 		Ink foreground = INK;

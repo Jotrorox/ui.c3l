@@ -25,6 +25,9 @@ struct Widget
 	int content_height; // Scroll group extent, excluding viewport padding.
 	int scroll_y;
 	int scroll_max;
+	bool scrollbar; // Opt-in gutter; track appears only while overflowing.
+	Rect scroll_track;
+	Rect scroll_thumb;
 	bool scroll_space; // Signed coordinates inside a scrolling subtree.
 	Binding* binding;
 	Binding* enabled_binding;
@@ -64,6 +67,7 @@ fn void Widget.children_changed(&self)
 fn void unlink_widget(Widget* self) @private
 {
 	View* view = self.owner;
+	view.cancel_scrollbar_subtree(self);
 	// Reparenting can change inherited enabled state without changing geometry.
 	view.invalidate(self.visible);
 	if (self.previous) { self.previous.next = self.next; }
@@ -234,7 +238,7 @@ fn void assign_enabled(Widget* self, bool enabled) @private
 {
 	if (self.disabled == !enabled) return;
 	self.disabled = !enabled;
-	// Containers have no ink; their visible bounds cover all descendant ink.
+	// Container bounds cover their scrollbar and all descendant ink.
 	self.owner.invalidate(self.visible);
 	self.owner.reconcile_input();
 }
@@ -269,6 +273,8 @@ fn void collapse_geometry(Widget* self) @private
 {
 	self.owner.invalidate(self.visible);
 	self.visible = {};
+	self.scroll_track = {};
+	self.scroll_thumb = {};
 	for (Widget* child = self.first; child; child = child.next) collapse_geometry(child);
 }
 
@@ -339,13 +345,18 @@ fn Widget* View.hit_test(&self, int x, int y)
 
 fn void View.reconcile_input(&self)
 {
+	if (self.scroll_pressed && (!self.scroll_pressed.is_enabled() ||
+		!self.scroll_pressed.is_visible() || self.scroll_pressed.scroll_track.intersect(self.scroll_pressed.visible).empty()))
+	{
+		self.cancel_scrollbar();
+	}
 	if (self.focused && !self.focused.interactive())
 	{
 		self.invalidate(self.focused.visible);
 		self.focused = null;
 	}
 	if (self.pressed && !self.pressed.interactive()) self.cancel_press();
-	Widget* hit = self.pointer_known ? self.hit_test_current(self.pointer_x, self.pointer_y) : null;
+	Widget* hit = self.pointer_known && !self.scroll_pressed ? self.hit_test_current(self.pointer_x, self.pointer_y) : null;
 	if (hit == self.hovered) return;
 	if (self.hovered) self.invalidate(self.hovered.visible);
 	self.hovered = hit;
@@ -358,12 +369,15 @@ fn void View.pointer_move(&self, int x, int y)
 	self.pointer_y = y;
 	self.pointer_known = true;
 	self.update();
+	self.move_scrollbar(y);
 }
 
 fn void View.pointer_down(&self, int x, int y)
 {
 	self.cancel_press();
+	self.scroll_press_active = false;
 	self.pointer_move(x, y);
+	if (self.press_scrollbar(x, y)) return;
 	if (self.focused) self.invalidate(self.focused.visible);
 	self.focused = self.hovered;
 	self.pressed = self.hovered;
@@ -373,6 +387,13 @@ fn void View.pointer_down(&self, int x, int y)
 fn void View.pointer_up(&self, int x, int y)
 {
 	self.pointer_move(x, y);
+	if (self.scroll_press_active)
+	{
+		self.cancel_press();
+		self.scroll_press_active = false;
+		self.reconcile_input();
+		return;
+	}
 	Widget* pressed = self.pressed;
 	self.cancel_press();
 	// Clear capture first: callbacks may remove the widget or its ancestors.
@@ -383,6 +404,12 @@ fn void View.pointer_up(&self, int x, int y)
 }
 
 fn void View.cancel_press(&self)
+{
+	self.cancel_scrollbar();
+	self.cancel_widget_press();
+}
+
+fn void View.cancel_widget_press(&self)
 {
 	if (self.pressed) self.invalidate(self.pressed.visible);
 	self.pressed = null;
@@ -449,6 +476,7 @@ fn void View.activate_focused(&self)
 fn void View.blur(&self)
 {
 	self.cancel_press();
+	self.scroll_press_active = false;
 	self.held_keys = {};
 	self.pointer_known = false;
 	if (self.hovered) self.invalidate(self.hovered.visible);

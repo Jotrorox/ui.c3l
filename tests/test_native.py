@@ -68,6 +68,12 @@ class X11Desktop:
             "XSync": ([c.c_void_p, c.c_int], c.c_int),
             "XSetInputFocus": ([c.c_void_p, c.c_ulong, c.c_int, c.c_ulong], c.c_int),
             "XResizeWindow": ([c.c_void_p, c.c_ulong, c.c_uint, c.c_uint], c.c_int),
+            "XGetImage": ([c.c_void_p, c.c_ulong, c.c_int, c.c_int, c.c_uint, c.c_uint,
+                           c.c_ulong, c.c_int], c.c_void_p),
+            "XGetPixel": ([c.c_void_p, c.c_int, c.c_int], c.c_ulong),
+            "XDestroyImage": ([c.c_void_p], c.c_int),
+            "XTranslateCoordinates": ([c.c_void_p, c.c_ulong, c.c_ulong, c.c_int, c.c_int,
+                                       c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(c.c_ulong)], c.c_int),
             "XCloseDisplay": ([c.c_void_p], c.c_int),
         }
         for name, (args, result) in declarations.items():
@@ -124,7 +130,7 @@ class X11Desktop:
                                   time=self.event_time if timestamp is None else timestamp,
                                   state=int(shift), x=x, y=y, detail=detail, same_screen=1)
         self.event_time += 10
-        mask = {2: 1, 3: 1 << 1, 4: 1 << 2, 5: 1 << 3}[kind]
+        mask = {2: 1, 3: 1 << 1, 4: 1 << 2, 5: 1 << 3, 6: 1 << 6, 8: 1 << 5}[kind]
         if not self.api.XSendEvent(self.display, window, 0, mask, c.byref(event)):
             raise RuntimeError("XSendEvent failed")
         self.api.XFlush(self.display)
@@ -133,6 +139,39 @@ class X11Desktop:
         x, y, width, height = rect
         self.input(window, 4, 1, x + width // 2, y + height // 2)
         self.input(window, 5, 1, x + width // 2, y + height // 2)
+
+    def pointer(self, window, action, x=0, y=0):
+        self.input(window, {"down": 4, "up": 5, "move": 6, "leave": 8}[action], 1, x, y)
+
+    def pixel(self, window, x, y):
+        image = self.api.XGetImage(self.display, window, x, y, 1, 1, c.c_ulong(-1).value, 2)
+        if not image:
+            raise RuntimeError("XGetImage failed")
+        try:
+            return self.api.XGetPixel(image, 0, 0) & 0xFFFFFF
+        finally:
+            self.api.XDestroyImage(image)
+
+    def physical_pointer(self, window, action, x, y):
+        if os.environ.get("UI_TEST_ISOLATED_X11") != "1":
+            raise RuntimeError("physical pointer injection requires the isolated Xvfb runner")
+        if not hasattr(self, "xtest"):
+            try:
+                self.xtest = c.CDLL("libXtst.so.6")
+            except OSError as error:
+                raise unittest.SkipTest(f"actual X11 capture test needs libXtst.so.6: {error}") from error
+            self.xtest.XTestFakeMotionEvent.argtypes = [c.c_void_p, c.c_int, c.c_int, c.c_int, c.c_ulong]
+            self.xtest.XTestFakeButtonEvent.argtypes = [c.c_void_p, c.c_uint, c.c_int, c.c_ulong]
+        root_x, root_y, child = c.c_int(), c.c_int(), c.c_ulong()
+        root = self.api.XDefaultRootWindow(self.display)
+        if not self.api.XTranslateCoordinates(self.display, window, root, x, y,
+                                              c.byref(root_x), c.byref(root_y), c.byref(child)):
+            raise RuntimeError("XTranslateCoordinates failed")
+        if not self.xtest.XTestFakeMotionEvent(self.display, -1, root_x.value, root_y.value, 0):
+            raise RuntimeError("XTestFakeMotionEvent failed")
+        if action != "move" and not self.xtest.XTestFakeButtonEvent(self.display, 1, action == "down", 0):
+            raise RuntimeError("XTestFakeButtonEvent failed")
+        self.api.XSync(self.display, 0)
 
     def wheel(self, window, rect, steps=1):
         x, y, width, height = rect
@@ -235,6 +274,27 @@ class WindowsDesktop:
             if not self.api.PostMessageW(window, message, wparam, position):
                 raise c.WinError(c.get_last_error())
 
+    def pointer(self, window, action, x=0, y=0):
+        message = {"down": 0x201, "up": 0x202, "move": 0x200, "leave": 0x2A3}[action]
+        position = (x & 0xFFFF) | ((y & 0xFFFF) << 16)
+        if not self.api.PostMessageW(window, message, int(action == "down"), position):
+            raise c.WinError(c.get_last_error())
+
+    def pixel(self, window, x, y):
+        self.api.GetDC.argtypes = [wintypes.HWND]
+        self.api.GetDC.restype = wintypes.HDC
+        self.api.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        gdi = c.WinDLL("gdi32", use_last_error=True)
+        gdi.GetPixel.argtypes = [wintypes.HDC, c.c_int, c.c_int]
+        gdi.GetPixel.restype = wintypes.COLORREF
+        dc = self.api.GetDC(window)
+        if not dc:
+            raise c.WinError(c.get_last_error())
+        try:
+            return gdi.GetPixel(dc, x, y)
+        finally:
+            self.api.ReleaseDC(window, dc)
+
     def wheel_delta(self, window, rect, delta):
         x, y, width, height = rect
         point = wintypes.POINT(x + width // 2, y + height // 2)
@@ -282,7 +342,7 @@ class WindowsDesktop:
 @unittest.skipUnless(os.environ.get("UI_NATIVE_TESTS") == "1", "set UI_NATIVE_TESTS=1 to open test windows")
 class NativeWindowTests(unittest.TestCase):
     @contextmanager
-    def fixture(self, name, title, reopen=False):
+    def fixture(self, name, title, reopen=False, reopen_title="ui keyboard test 1"):
         with tempfile.TemporaryDirectory() as directory:
             suffix = ".exe" if sys.platform == "win32" else ""
             binary = Path(directory) / (name + suffix)
@@ -320,8 +380,8 @@ class NativeWindowTests(unittest.TestCase):
                         self.assertTrue(window, f"{name} window did not appear")
                         yield desktop, window, snapshot
                         if reopen:
-                            window = desktop.find("ui keyboard test 1")
-                            self.assertTrue(window, "reopened keyboard window missing")
+                            window = desktop.find(reopen_title)
+                            self.assertTrue(window, "reopened fixture window missing")
                         desktop.close_window(window)
                         self.assertEqual(process.wait(timeout=5), 0, process.stderr.read())
                     finally:
@@ -331,6 +391,124 @@ class NativeWindowTests(unittest.TestCase):
                         reader.join(timeout=5)
             finally:
                 desktop.close()
+
+    def assert_pixel(self, desktop, window, x, y, expected):
+        deadline = time.monotonic() + 2
+        while True:
+            actual = desktop.pixel(window, x, y)
+            if actual == expected or time.monotonic() >= deadline:
+                self.assertEqual(actual, expected, f"pixel ({x}, {y})")
+                return
+            time.sleep(0.02)
+
+    def test_scrollbar_pixels_page_drag_blur_and_reactive_shrink(self):
+        with self.fixture("scrollbar_window", "ui scrollbar test 0") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+
+            def inspect():
+                desktop.click(window, initial["inspect"])
+                result = snapshot()
+                self.assertEqual(result["source"], "inspect")
+                return result
+
+            tx, ty, tw, th = initial["inner_track"]
+            self.assertEqual(initial["first"][0] + initial["first"][2], tx)
+            self.assert_pixel(desktop, window, tx + tw // 2, ty + 3, 0)
+            self.assert_pixel(desktop, window, tx, ty + th - 3, 0)
+            self.assert_pixel(desktop, window, tx + tw // 2, ty + th - 3, 0xFFFFFF)
+            desktop.click(window, [tx + tw // 2, ty + th - 3, 1, 1])
+            paged = inspect()
+            self.assertEqual((paged["inner_offset"], paged["outer_offset"]), (th, 0))
+            x, y, width, height = paged["inner_thumb"]
+            desktop.pointer(window, "down", x + width // 2, y + 2)
+            desktop.pointer(window, "move", x + width // 2, y + 12)
+            desktop.pointer(window, "leave", -1, -1)
+            # The inspector retains focus; key activation observes the drag
+            # without introducing another pointer press.
+            desktop.key(window, "Return")
+            held = snapshot()
+            self.assertTrue(held["dragging"] and held["scroll_press"])
+            self.assertGreater(held["inner_offset"], paged["inner_offset"])
+            desktop.pointer(window, "move", -100, 700)
+            desktop.pointer(window, "up", -100, 700)
+            bottom = inspect()
+            self.assertEqual(bottom["inner_offset"], bottom["inner_extent"])
+            self.assertEqual(bottom["clicks"], 0)
+            self.assertFalse(bottom["dragging"] or bottom["scroll_press"])
+            self.assert_pixel(desktop, window, tx + tw // 2, ty + 3, 0xFFFFFF)
+            self.assert_pixel(desktop, window, tx + tw // 2, ty + th - 3, 0)
+            desktop.click(window, initial["reset"])
+            snapshot()
+            desktop.pointer(window, "down", tx + 2, ty + 2)
+            desktop.refocus(window)
+            desktop.pointer(window, "move", tx + 2, 700)
+            desktop.pointer(window, "up", initial["first"][0] + 2, initial["first"][1] + 2)
+            canceled = inspect()
+            self.assertEqual((canceled["inner_offset"], canceled["clicks"]), (0, 0))
+            desktop.click(window, initial["toggle"])
+            short = snapshot()
+            self.assertEqual(short["inner_extent"], 0)
+            self.assertEqual(short["inner_track"], [0, 0, 0, 0])
+            self.assert_pixel(desktop, window, tx + tw // 2, ty + 3, 0xFFFFFF)
+            self.assert_pixel(desktop, window, tx, ty + th - 3, 0xFFFFFF)
+            desktop.click(window, initial["toggle"])
+            restored = snapshot()
+            self.assertEqual(restored["inner_thumb"], initial["inner_thumb"])
+            self.assert_pixel(desktop, window, tx + tw // 2, ty + 3, 0)
+
+    def test_scrollbar_close_reopen_cancels_active_drag(self):
+        with self.fixture("scrollbar_window", "ui scrollbar test 0", reopen=True,
+                          reopen_title="ui scrollbar test 1") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            x, y, _, _ = initial["inner_thumb"]
+            desktop.pointer(window, "down", x + 2, y + 2)
+            desktop.close_window(window)
+            closed = snapshot()
+            self.assertEqual(closed["source"], "closed")
+            self.assertFalse(closed["dragging"] or closed["scroll_press"])
+            deadline = time.monotonic() + 5
+            reopened = None
+            while time.monotonic() < deadline:
+                reopened = desktop.find("ui scrollbar test 1")
+                if reopened:
+                    break
+                time.sleep(0.02)
+            self.assertTrue(reopened)
+            desktop.pointer(reopened, "move", x, 700)
+            desktop.pointer(reopened, "up", initial["first"][0] + 2, initial["first"][1] + 2)
+            desktop.key(reopened, "Tab")
+            desktop.key(reopened, "Return")
+            state = snapshot()
+            self.assertEqual((state["generation"], state["inner_offset"], state["clicks"]), (1, 0, 0))
+            self.assertFalse(state["dragging"] or state["scroll_press"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and os.environ.get("UI_TEST_ISOLATED_X11") == "1",
+                         "actual X11 pointer capture requires isolated Xvfb")
+    def test_x11_actual_implicit_capture_delivers_outside_drag_and_release(self):
+        with self.fixture("scrollbar_window", "ui scrollbar test 0") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            x, y, _, _ = initial["inner_thumb"]
+            # XSendEvent does not establish a server grab. XTEST creates an
+            # actual button press and root-level motion outside this window.
+            desktop.physical_pointer(window, "down", x + 2, y + 2)
+            try:
+                desktop.physical_pointer(window, "move", 1000, 700)
+            finally:
+                desktop.physical_pointer(window, "up", 1000, 700)
+            desktop.click(window, initial["inspect"])
+            moved = snapshot()
+            self.assertEqual(moved["inner_offset"], moved["inner_extent"])
+            self.assertEqual(moved["clicks"], 0)
+            self.assertFalse(moved["dragging"] or moved["scroll_press"])
+            desktop.physical_pointer(window, "move", x + 2, y + 2)
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["inner_offset"], moved["inner_extent"])
 
     def test_nested_wheel_boundary_bubbling_stale_clicks_and_focus_reveal(self):
         with self.fixture("scroll_window", "ui scroll test") as (desktop, window, snapshot):

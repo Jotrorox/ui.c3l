@@ -109,6 +109,24 @@ fn void win_wheel(View* view, int* remainder, int x, int y, short delta) @privat
 	if (pixels) view.scroll_wheel(x, y, pixels);
 }
 
+// Separate pointer metadata from HWND operations so cancellation and signed
+// captured coordinates are exercised by both native dispatch and unit tests.
+fn void win_pointer(View* view, uint message, int x = 0, int y = 0) @private
+{
+	switch (message)
+	{
+		case 0x201: view.pointer_down(x, y);
+		case 0x202: view.pointer_up(x, y);
+		case 0x200: view.pointer_move(x, y);
+		case 0x2a3: // Leave is not captured motion; do not move an active thumb.
+			if (!view.scroll_pressed) view.pointer_move(-1, -1);
+		case 0x215: // Capture loss and cancel mode preserve the press identity.
+		case 0x1f:
+			view.cancel_press();
+		default:
+	}
+}
+
 fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wparam, Win32_LPARAM lparam) @private
 {
 	View* view = window.view;
@@ -142,12 +160,12 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 		case 0x201: // WM_LBUTTONDOWN
 			(void)set_focus(hwnd);
 			(void)set_capture(hwnd);
-			view.pointer_down(x, y);
+			win_pointer(view, message, x, y);
 		case 0x202:
-			view.pointer_up(x, y);
+			win_pointer(view, message, x, y);
 			(void)release_capture();
 		case 0x200: // WM_MOUSEMOVE
-			view.pointer_move(x, y);
+			win_pointer(view, message, x, y);
 			TrackMouseEvent track = { TrackMouseEvent::size, 2, hwnd, 0 }; // TME_LEAVE
 			(void)track_mouse(&track);
 		case 0x20a: // WM_MOUSEWHEEL carries signed SCREEN coordinates.
@@ -155,9 +173,15 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 			if (!screen_to_client(hwnd, &point)) { window.canvas.failure = ui::PLATFORM_ERROR; }
 			else { win_wheel(view, &window.wheel_remainder, point.x, point.y, (short)((wparam >> 16) & 0xffff)); }
 		case 0x2a3: // WM_MOUSELEAVE
-			view.pointer_move(-1, -1);
 		case 0x215: // WM_CAPTURECHANGED
-			view.cancel_press();
+			win_pointer(view, message);
+		case 0x1f: // WM_CANCELMODE (menus, modal dialogs, native cancellation).
+			win_pointer(view, message);
+			(void)release_capture();
+		case 0x18: // WM_SHOWWINDOW: hiding must end a native interaction.
+			if (wparam) return false;
+			view.blur();
+			(void)release_capture();
 		case 8: // WM_KILLFOCUS
 			view.blur();
 			(void)release_capture();

@@ -305,11 +305,21 @@ fn void? XCanvas.event(&self, View* view, char[] event)
 			else if (event[1] == 1) { view.pointer_down(x, y); }
 		case 5:
 			if (read32(event, 12) == self.setup.window && event[1] == 1) view.pointer_up(x, y);
-		case 6:
-		case 7:
+		case 6: // Captured MotionNotify keeps signed coordinates outside the window.
 			if (read32(event, 12) == self.setup.window) view.pointer_move(x, y);
+		case 7: // EnterNotify / LeaveNotify carry the grab mode at byte 30.
 		case 8:
-			if (read32(event, 12) == self.setup.window) view.pointer_move(-1, -1);
+			if (read32(event, 12) != self.setup.window) return;
+			if (event[30] == 2) view.cancel_press(); // NotifyUngrab: capture ended.
+			// Crossing events are not drag motion. In particular, a synthetic
+			// (-1,-1) leave would jump a captured thumb to the top endpoint.
+			if (!view.scroll_pressed) view.pointer_move(type == 7 ? x : -1, type == 7 ? y : -1);
+		case 18: // UnmapNotify ends both pointer and keyboard interactions.
+			if (read32(event, 8) == self.setup.window)
+			{
+				view.blur();
+				self.release_seen = {};
+			}
 		case 10: // FocusOut
 			if (read32(event, 4) == self.setup.window)
 			{
