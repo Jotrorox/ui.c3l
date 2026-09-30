@@ -3,7 +3,10 @@ import std::math;
 
 // All sizes are pixels. Zero width/height means content size, and zero
 // maximum means unbounded. Limits clamp the preferred size before placement.
-// Padding and gap apply to containers only. There is no wrapping or flexing.
+// Spacing and alignment apply to containers only. There is no wrapping or
+// flexing. START preserves the default geometry; STRETCH is cross-axis only.
+enum Alignment { START, CENTER, END, STRETCH }
+
 struct Layout
 {
 	int width;
@@ -14,6 +17,8 @@ struct Layout
 	int max_height;
 	int padding;
 	int gap;
+	Alignment main_align;
+	Alignment cross_align;
 }
 
 const int LAYOUT_LIMIT = 65535;
@@ -28,9 +33,14 @@ fn bool Layout.valid(self)
 	{
 		if (value < 0 || value > LAYOUT_LIMIT) return false;
 	}
-	return (!self.max_width || self.min_width <= self.max_width) &&
+	return valid_alignment(self.main_align, self.cross_align) &&
+		(!self.max_width || self.min_width <= self.max_width) &&
 		(!self.max_height || self.min_height <= self.max_height);
 }
+
+fn bool valid_alignment(Alignment main_align, Alignment cross_align) @private =>
+	(int)main_align >= 0 && (int)main_align <= (int)Alignment.END &&
+	(int)cross_align >= 0 && (int)cross_align <= (int)Alignment.STRETCH;
 
 fn int layout_add(int a, int b) @private => math::min(LAYOUT_LIMIT, a + b);
 
@@ -45,23 +55,34 @@ fn int constrain(int natural, int explicit_size, int minimum, int maximum) @priv
 fn bool rect_equal(Rect a, Rect b) @private =>
 	a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 
-// Invalid options leave the previous layout intact. A leaf cannot have spacing.
+// Invalid options leave the previous layout intact. Leaves only accept sizes.
 fn bool Widget.set_layout(&self, Layout layout)
 {
 	assert(!active_binding, "Bindings cannot mutate widgets");
-	if (!layout.valid() || (!self.is_container() && (layout.padding || layout.gap))) return false;
+	if (!layout.valid() || (!self.is_container() && (layout.padding || layout.gap ||
+		layout.main_align != START || layout.cross_align != START))) return false;
 	Layout old = self.layout;
-	if (old.width == layout.width && old.height == layout.height &&
-		old.min_width == layout.min_width && old.min_height == layout.min_height &&
-		old.max_width == layout.max_width && old.max_height == layout.max_height &&
-		old.padding == layout.padding && old.gap == layout.gap) return true;
+	bool size_changed = old.width != layout.width || old.height != layout.height ||
+		old.min_width != layout.min_width || old.min_height != layout.min_height ||
+		old.max_width != layout.max_width || old.max_height != layout.max_height ||
+		old.padding != layout.padding || old.gap != layout.gap;
+	bool alignment_changed = old.main_align != layout.main_align || old.cross_align != layout.cross_align;
+	if (!size_changed && !alignment_changed) return true;
 	self.layout = layout;
-	self.request_size();
-	if (old.padding != layout.padding || old.gap != layout.gap) self.request_layout();
+	if (size_changed)
+	{
+		self.request_size();
+		// Explicit/auto sizes and maximums affect stretch even when the cached
+		// preferred size remains identical. The parent must place this child.
+		if (self.parent) { self.parent.request_layout(); }
+		else { self.owner.layout_dirty = true; }
+	}
+	if (alignment_changed || old.padding != layout.padding || old.gap != layout.gap) self.request_layout();
 	return true;
 }
 
-// The implicit root always occupies the viewport; only its spacing is settable.
+// The implicit root always occupies the viewport. Spacing and alignment are
+// independent; neither setter changes intrinsic measurements.
 fn bool View.set_root_spacing(&self, int padding = 16, int gap = 8)
 {
 	assert(!active_binding, "Bindings cannot mutate widgets");
@@ -71,6 +92,17 @@ fn bool View.set_root_spacing(&self, int padding = 16, int gap = 8)
 	self.custom_root_spacing = true;
 	self.root_padding = padding;
 	self.root_gap = gap;
+	self.layout_dirty = true;
+	return true;
+}
+
+fn bool View.set_root_alignment(&self, Alignment main_align = START, Alignment cross_align = START)
+{
+	assert(!active_binding, "Bindings cannot mutate widgets");
+	if (!valid_alignment(main_align, cross_align)) return false;
+	if (main_align == self.root_main_align && cross_align == self.root_cross_align) return true;
+	self.root_main_align = main_align;
+	self.root_cross_align = cross_align;
 	self.layout_dirty = true;
 	return true;
 }
@@ -166,8 +198,64 @@ fn void Widget.measure(&self)
 	else { self.owner.layout_dirty = true; }
 }
 
-// Main-axis sizes stay at their preferred size, even on overflow. Cross-axis
-// sizes are capped by available space (which wins over minimum constraints).
+// Alignment only distributes nonnegative remaining space. Odd center pixels
+// stay at the end, and an overflowing group remains anchored at the start.
+fn int alignment_offset(Alignment alignment, int available, int used) @private
+{
+	int remaining = math::max(0, available - used);
+	if (alignment == CENTER) return remaining / 2;
+	return alignment == END ? remaining : 0;
+}
+
+fn int cross_size(Widget* child, bool row, int available, Alignment alignment) @private
+{
+	Layout layout = child.layout;
+	int preferred = row ? child.desired.height : child.desired.width;
+	int explicit_size = row ? layout.height : layout.width;
+	if (alignment == STRETCH && !explicit_size)
+	{
+		int maximum = row ? layout.max_height : layout.max_width;
+		return math::min(available, maximum ? maximum : LAYOUT_LIMIT);
+	}
+	return math::min(preferred, available);
+}
+
+// Shared by explicit containers and the implicit root Column. Main-axis sizes
+// keep their preferred size on overflow. Available cross space wins over min.
+fn void place_children(Widget* first, bool row, Rect content, Rect clip, int gap,
+	Alignment main_align, Alignment cross_align, bool changed) @private
+{
+	int used;
+	if (changed && main_align != START)
+	{
+		bool preceding;
+		for (Widget* child = first; child; child = child.next)
+		{
+			if (child.hidden) continue;
+			if (preceding) used = layout_add(used, gap);
+			used = layout_add(used, row ? child.desired.width : child.desired.height);
+			preceding = true;
+		}
+	}
+	int cursor = layout_add(row ? content.x : content.y,
+		alignment_offset(main_align, row ? content.width : content.height, used));
+	for (Widget* child = first; child; child = child.next)
+	{
+		if (child.hidden) { collapse_geometry(child); continue; }
+		Rect rect = child.bounds;
+		if (changed)
+		{
+			int available = row ? content.height : content.width;
+			int cross = cross_size(child, row, available, cross_align);
+			int offset = alignment_offset(cross_align, available, cross);
+			rect = row ? (Rect) { cursor, layout_add(content.y, offset), child.desired.width, cross } :
+				(Rect) { layout_add(content.x, offset), cursor, cross, child.desired.height };
+		}
+		child.place(rect, clip);
+		cursor = layout_add(cursor, layout_add(row ? child.desired.width : child.desired.height, gap));
+	}
+}
+
 // Every ancestor clips descendants to its padded content rectangle.
 fn void Widget.place(&self, Rect bounds, Rect ancestor_clip)
 {
@@ -186,21 +274,8 @@ fn void Widget.place(&self, Rect bounds, Rect ancestor_clip)
 	{
 		Rect content = inset(bounds, self.layout.padding);
 		Rect clip = content.intersect(visible);
-		int x = content.x;
-		int y = content.y;
-		for (Widget* child = self.first; child; child = child.next)
-		{
-			if (child.hidden) { collapse_geometry(child); continue; }
-			Rect rect = child.bounds;
-			if (changed || self.layout_dirty)
-			{
-				rect = { x, y, self.kind == ROW ? child.desired.width : math::min(child.desired.width, content.width),
-					self.kind == COLUMN ? child.desired.height : math::min(child.desired.height, content.height) };
-			}
-			child.place(rect, clip);
-			if (self.kind == ROW) { x = layout_add(x, layout_add(child.desired.width, self.layout.gap)); }
-			else { y = layout_add(y, layout_add(child.desired.height, self.layout.gap)); }
-		}
+		place_children(self.first, self.kind == ROW, content, clip, self.layout.gap,
+			self.layout.main_align, self.layout.cross_align, changed || self.layout_dirty);
 	}
 	self.layout_dirty = false;
 	self.subtree_layout_dirty = false;

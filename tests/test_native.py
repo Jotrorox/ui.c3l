@@ -451,6 +451,78 @@ class NativeWindowTests(unittest.TestCase):
             desktop.click(window, removed["mutate"])
             self.assertEqual(snapshot()["count"], 3)
 
+    def test_alignment_stretch_resize_and_reactive_input(self):
+        with self.fixture("alignment_window", "ui alignment test") as (desktop, window, snapshot):
+            def read(source):
+                state = snapshot()
+                self.assertEqual(state["source"], source, state)
+                return state
+
+            def check_geometry(state):
+                panel, summary, text = state["panel"], state["summary"], state["text"]
+                actions, action = state["actions"], state["action"]
+                # Root padding and panel padding are fixture inputs; every font
+                # dimension comes from the native backend's actual geometry.
+                self.assertEqual((panel[0], panel[2]), (16, state["viewport"][0] - 32))
+                self.assertEqual(summary[0], panel[0] + 7)
+                self.assertEqual(summary[2], panel[2] - 14)
+                self.assertEqual((actions[0], actions[2]), (summary[0], summary[2]))
+                self.assertEqual(text[0], summary[0] + (summary[2] - text[2]) // 2)
+                expected_action_x = actions[0] if state["aligned_start"] else actions[0] + actions[2] - action[2]
+                self.assertEqual(action[0], expected_action_x)
+                self.assertGreater(action[2], 0)
+                group_height = panel[1] + panel[3] - state["inspect"][1]
+                self.assertEqual(state["inspect"][1], 16 + (state["viewport"][1] - 32 - group_height) // 2)
+
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = read("inspect")
+            check_geometry(initial)
+            self.assertEqual(initial["count"], 0)
+
+            target_size = (initial["viewport"][0] + 240, initial["viewport"][1] + 80)
+            desktop.resize(window, *target_size)
+            deadline = time.monotonic() + 5
+            while desktop.size(window) != target_size and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(desktop.size(window), target_size)
+            # A native size query can finish before the fixture processes its
+            # resize event. Acknowledge that event through the focused inspector.
+            while True:
+                desktop.key(window, "Return")
+                resized = read("inspect")
+                if tuple(resized["viewport"]) == target_size:
+                    break
+                self.assertLess(time.monotonic(), deadline, "fixture did not acknowledge resize")
+            check_geometry(resized)
+            self.assertGreater(resized["action"][0], initial["action"][0])
+            self.assertGreater(resized["action"][1], initial["action"][1])
+            desktop.click(window, initial["action"])
+            desktop.click(window, resized["inspect"])
+            self.assertEqual(read("inspect")["count"], 0)
+
+            desktop.click(window, resized["action"])
+            grown = read("action")
+            self.assertEqual(grown["count"], 1)
+            self.assertTrue(grown["focused_action"])
+            self.assertGreater(grown["text"][2], resized["text"][2])
+            self.assertLess(grown["text"][0], resized["text"][0])
+            check_geometry(grown)
+
+            desktop.click(window, grown["align"])
+            shifted = read("align")
+            self.assertTrue(shifted["aligned_start"])
+            self.assertLess(shifted["action"][0], grown["action"][0])
+            check_geometry(shifted)
+            desktop.click(window, grown["action"])
+            desktop.click(window, shifted["inspect"])
+            self.assertEqual(read("inspect")["count"], 1)
+            desktop.click(window, shifted["action"])
+            final = read("action")
+            self.assertEqual(final["count"], 2)
+            self.assertTrue(final["focused_action"])
+            check_geometry(final)
+
     def test_nested_input_resize_clipping_and_subtree_removal(self):
         with tempfile.TemporaryDirectory() as directory:
             suffix = ".exe" if sys.platform == "win32" else ""

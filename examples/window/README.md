@@ -2,6 +2,10 @@ This example builds a Checkbox and a nested counter section once, using `@` modi
 collapses or restores the section. **Increment** changes its reactive label;
 **Reset** is reactively disabled at zero. Use **Tab** / **Shift+Tab** to focus
 controls and **Enter** / **Space** to activate them. Both keys toggle Checkboxes.
+Resize the window to see the content stay vertically centered, the counter
+container stretch across the viewport, its label stay horizontally centered,
+and the action row keep its buttons at the right edge. Hiding the counter
+recenters the remaining Checkbox.
 
 From the repository root:
 
@@ -26,12 +30,19 @@ struct Counter
 }
 
 Counter app = { .count.value = 5, .shown.value = true };
-view.checkbox("Show counter").@checked(&app.shown);
-view.@column({ .gap = 8, .max_width = 360 }; Widget* counter)
+view.set_root_alignment(CENTER, STRETCH);
+view.@row({ .main_align = CENTER }; Widget* header)
+{
+    header.checkbox("Show counter").@checked(&app.shown);
+};
+view.@column({ .padding = 12, .gap = 12, .cross_align = STRETCH }; Widget* counter)
 {
     counter.@visible(&app.shown);
-    counter.text().@text(&app.count, "Count: %s");
-    counter.@row({ .gap = 8 }; Widget* actions)
+    counter.@row({ .main_align = CENTER }; Widget* summary)
+    {
+        summary.text().@text(&app.count, "Count: %s");
+    };
+    counter.@row({ .gap = 8, .main_align = END }; Widget* actions)
     {
         actions.button("Increment").@on_click(&app.count, fn (c) => c.set(c.get() + 1));
         actions.button("Reset")
@@ -93,7 +104,12 @@ everything; call it after the native window has closed.
 A `Layout` is a small value object. Containers accept one on creation; use
 `widget.set_layout(layout)` to replace it later. The setter returns `false`
 without changing anything for invalid options. Container constructors require
-valid options. Unspecified fields are zero.
+valid options. Unspecified size and spacing fields are zero; both alignment
+fields default to `START`.
+
+C3 positional struct initializers require every field: existing positional
+`Layout` initializers need trailing `START, START` for the new alignment fields.
+Designated initializers and default layouts keep their existing behavior.
 
 | Fields | Meaning |
 | --- | --- |
@@ -102,11 +118,16 @@ valid options. Unspecified fields are zero.
 | `max_width`, `max_height` | Upper bounds; zero means no explicit upper bound. |
 | `padding` | Equal inset on all four sides of a container. |
 | `gap` | Space between visible children; no leading or trailing space. |
+| `main_align` | `START`, `CENTER`, or `END` for the group of visible children. |
+| `cross_align` | `START`, `CENTER`, `END`, or `STRETCH` for each visible child. |
 
-Values must be between 0 and 65535. A nonzero maximum must be at least its
-minimum. Layout sums and coordinates saturate at 65535. Padding and gap must be
-zero on Text, Button, and Checkbox widgets. Zero is the automatic dimension
-sentinel; there is no separate explicit-zero-size sentinel.
+Dimension and spacing values must be between 0 and 65535. A nonzero maximum must
+be at least its minimum. Layout sums and coordinates saturate at 65535. Padding and gap must be
+zero on Text, Button, and Checkbox widgets, and both alignment fields must be
+`START` on these leaves. Leaves can still have size constraints and are aligned
+by their parent. Alignment values come from `ui::Alignment`; `STRETCH` is invalid
+for `main_align`, and unknown enum values are rejected. Zero is the automatic
+dimension sentinel; there is no separate explicit-zero-size sentinel.
 
 Measurement runs from children to parents. A Row sums child widths and takes
 the tallest height; a Column sums heights and takes the widest width. Padding
@@ -116,18 +137,61 @@ limits clamp the result. Labels remain single-line; buttons add their existing
 12-pixel horizontal and 8-pixel vertical text insets. Checkboxes use a 16-pixel
 box, 4-pixel outer insets, and an 8-pixel gap before a nonempty label.
 
-Placement runs from parents to children, aligned to the top left. Children
-retain their preferred size along the container's main axis. On its cross axis,
-the parent's available content space caps the child's size, even below a
-minimum. There is no stretching, wrapping, proportional shrinking, or scrolling.
+Placement runs from parents to children inside their padded content rectangles.
+A Row's main axis is horizontal and its cross axis vertical; a Column reverses
+those axes. Padding is removed before computing available space. Main-axis
+alignment positions the whole group of visible children, whose extent is the
+sum of their constrained preferred sizes plus intervening gaps. `START` adds no
+offset, `CENTER` adds half the nonnegative remaining space rounded down, and
+`END` adds all of it. Children keep their preferred main-axis sizes. When the
+group overflows, all three choices anchor it at the start, with no negative
+offset or proportional shrinking. Hidden children add neither size nor gaps.
+
+Cross-axis `START`, `CENTER`, and `END` first cap each child's constrained
+preferred size to the available content space, then apply the same offset rule
+to that child. Cross-axis `STRETCH` fills available space for a child with an
+automatic cross-axis size: `width == 0` in a Column, or `height == 0` in a Row.
+A nonzero maximum still caps its stretched size. A nonzero explicit cross-axis
+size opts out of stretch: the child keeps its constrained preferred size,
+capped by available space, at the start edge. Maximum-capped stretched children
+also stay at the start edge. Available cross-axis space always wins over a
+minimum, including when no space remains. Stretch does not alter a child's
+main-axis size or its cached preferred size. Empty containers still measure
+their padding; alignment adds no intrinsic size.
+
+All alignment defaults are `START`, preserving the original top-left geometry.
+There is no weighted growth, wrapping, proportional shrinking, or scrolling.
 Overflow is clipped to **every ancestor's padded content rectangle**. Partly
 visible controls accept clicks only in their visible portion. Fully clipped,
 hidden, or disabled controls are skipped during depth-first keyboard focus traversal.
 Disabling a container also disables its descendants.
 
-The implicit root fills the viewport, with padding 16 and gap 8 for compatibility.
-`view.set_root_spacing(padding, gap)` changes those values and returns `false`
-for invalid spacing. Resize changes placement and clipping using cached metrics.
+The implicit root is always a Column that fills the viewport, with padding 16,
+gap 8, and `START` alignment on both axes for compatibility.
+`view.set_root_spacing(padding = 16, gap = 8)` changes its spacing independently
+of `view.set_root_alignment(main_align = START, cross_align = START)`.
+Both return `false` without changing anything for invalid options. The root
+accepts no explicit dimensions, min/max constraints, or orientation change.
+Its alignment follows the same rules as any Column:
+
+```c3
+view.set_root_alignment(CENTER, STRETCH);
+Widget* panel = view.column({ .padding = 12, .cross_align = STRETCH });
+Widget* actions = panel.row({ .gap = 8, .main_align = END });
+actions.button("Save");
+```
+
+Here the root vertically centers `panel` and fills its automatic width. The
+panel stretches the automatic-width action row, whose button sits at its end.
+Setting `panel`'s explicit width would opt it out of root stretch; setting only
+its maximum width would cap that stretch.
+
+Changing only alignment, root spacing, or viewport size requires placement and
+clipping updates, reusing intrinsic sizes and text metrics. Widget size
+constraints, padding, and gaps invalidate intrinsic measurements through their
+ancestors but still reuse unchanged text metrics. Alignment never changes
+intrinsic measurement. Runtime changes damage the old and new visible geometry
+and reconcile hover, pressed controls, and keyboard focus after layout.
 
 ## Reactive properties and visibility
 
@@ -221,8 +285,9 @@ The same State can feed multiple properties and multiple Views. Equal outputs
 skip property work while still rebuilding conditional dependencies.
 
 Text metrics and container measurements are cached separately from placement.
-Changed sizes invalidate affected ancestors; placement updates moved siblings
-and descendants. Clean subtrees reuse their caches. Old and new visible bounds
+Changed sizes invalidate affected ancestors; alignment changes only invalidate
+placement. Placement updates moved siblings and descendants, and clean subtrees
+reuse their caches. Old and new visible bounds
 are damaged when geometry changes. Hover is reconciled from the last pointer
 position after layout and resize.
 
@@ -297,8 +362,9 @@ c3c build --path examples/window
 python3 -m unittest discover -s tests -v
 ```
 
-C3 tests cover bindings, typed modifiers, independent property cleanup, layout, shared keyboard
-lifecycle, callback removal, X11 event translation, and (when built on Windows)
+C3 tests cover bindings, typed modifiers, independent property cleanup, layout,
+alignment and stretch, cached placement, shared keyboard lifecycle, callback
+removal, X11 event translation, and (when built on Windows)
 Win32 repeat metadata. The default Python suite runs simulated X11 tests on
 Linux and skips desktop tests. Simulation includes complete key cycles, explicit
 repeat pairs, mapping changes with changed strides, fragmented/interleaved
@@ -332,6 +398,8 @@ Linux. Fixtures report geometry for mouse targeting; X11 keycodes are queried
 from the server on every cycle. Drivers inject X11 events / Win32 messages with
 complete press/release cycles and explicit repeat metadata. These validate native
 backend dispatch and rendering, not physical keyboard hardware or IME behavior.
+The alignment fixture checks centered content and stretched containers with native
+font metrics, resized and runtime-moved action targets, and reactive label growth.
 
 [CI](../../.github/workflows/test.yml) configures Linux and Windows C3 tests,
 optimized tests, and example builds. Linux additionally runs simulation and the
@@ -350,6 +418,8 @@ c3c compile-only tests/fixtures/nested_window.c3 --libdir .. --lib ui \
 c3c compile-only tests/fixtures/checkbox_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
 c3c compile-only tests/fixtures/keyboard_window.c3 --libdir .. --lib ui \
+  --target windows-x64 --obj-out /tmp/ui-c3-win-check
+c3c compile-only tests/fixtures/alignment_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
 c3c test --target windows-x64 -C --suppress-run
 ```

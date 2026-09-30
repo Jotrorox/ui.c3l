@@ -38,6 +38,8 @@ struct View
 	bool custom_root_spacing;
 	int root_padding;
 	int root_gap;
+	Alignment root_main_align;
+	Alignment root_cross_align;
 	int pointer_x;
 	int pointer_y;
 	bool pointer_known;
@@ -110,15 +112,8 @@ fn void View.update(&self)
 		int padding = self.custom_root_spacing ? self.root_padding : 16;
 		int gap = self.custom_root_spacing ? self.root_gap : 8;
 		Rect content = inset({ 0, 0, self.width, self.height }, padding);
-		int y = content.y;
-		for (Widget* widget = self.first; widget; widget = widget.next)
-		{
-			if (widget.hidden) { collapse_geometry(widget); continue; }
-			Rect bounds = self.layout_dirty ? (Rect) { content.x, y,
-				math::min(widget.desired.width, content.width), widget.desired.height } : widget.bounds;
-			widget.place(bounds, content);
-			y = layout_add(y, layout_add(widget.desired.height, gap));
-		}
+		place_children(self.first, false, content, content, gap,
+			self.root_main_align, self.root_cross_align, self.layout_dirty);
 		self.layout_dirty = false;
 		self.subtree_layout_dirty = false;
 	}
