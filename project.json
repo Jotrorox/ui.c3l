@@ -13,6 +13,7 @@
     "tests/layout.c3",
     "tests/properties.c3",
     "tests/checkbox.c3",
+    "tests/modifiers.c3",
     "tests/keyboard.c3",
     "tests/x11_keyboard.c3",
     "tests/windows_keyboard.c3"

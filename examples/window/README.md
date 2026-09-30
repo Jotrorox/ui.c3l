@@ -1,4 +1,4 @@
-This example builds a Checkbox and a nested counter section once. **Show counter**
+This example builds a Checkbox and a nested counter section once, using `@` modifiers. **Show counter**
 collapses or restores the section. **Increment** changes its reactive label;
 **Reset** is reactively disabled at zero. Use **Tab** / **Shift+Tab** to focus
 controls and **Enter** / **Space** to activate them. Both keys toggle Checkboxes.
@@ -12,11 +12,59 @@ c3c run --path examples/window
 Requires C3 0.8.4 and a Windows desktop or a local X11/XWayland display on Linux.
 Close the window to exit and release its widgets and bindings.
 
+## Modifiers
+
+Widgets are created by plain methods (`text()`, `button()`, `checkbox()`,
+`row()`, `column()`) and configured by `@` modifiers. A modifier changes the
+widget it is called on and returns it, so modifiers chain:
+
+```c3
+struct Counter
+{
+    State{int} count;
+    State{bool} shown;
+}
+
+Counter app = { .count.value = 5, .shown.value = true };
+view.checkbox("Show counter").@checked(&app.shown);
+view.@column({ .gap = 8, .max_width = 360 }; Widget* counter)
+{
+    counter.@visible(&app.shown);
+    counter.text().@text(&app.count, "Count: %s");
+    counter.@row({ .gap = 8 }; Widget* actions)
+    {
+        actions.button("Increment").@on_click(&app.count, fn (c) => c.set(c.get() + 1));
+        actions.button("Reset")
+            .@on_click(&app.count, fn (c) => c.set(0))
+            .@enabled(&app.count, fn (c) => c.get() != 0);
+    };
+};
+```
+
+Every modifier takes a context pointer first. Lambda parameters are inferred
+from it, so `fn (c) => ...` receives a `State{int}*` above, or a `Counter*` when
+given `&app`. Lambdas cannot capture locals; reach state through the context.
+
+| Modifier | Forms |
+| --- | --- |
+| `@text` | `(&state)` shows the value; `(&state, "Count: %s")` formats it; `(&ctx, fn (c) => String)` computes it. |
+| `@visible`, `@enabled` | `(&bool_state)` or `(&ctx, fn (c) => bool)`. |
+| `@checked` | `(&bool_state)` binds a Checkbox **both ways**; `(&ctx, fn (c) => bool)` only reads. |
+| `@on_click` | `(&ctx, fn (c) { ... })` on Buttons. |
+| `@on_change` | `(&ctx, fn (c, checked) { ... })` on Checkboxes; replaces the `@checked(&state)` writer. |
+
+`@row` and `@column` on a View or container take a trailing body with the new
+container, then return it. Format strings must be compile-time constants.
+Wrong context or lambda types are compile errors. Modifiers are thin macros over
+the `void*` API below and follow the same binding, ownership, and lifetime rules.
+
 ## Building a tree
 
 `View.text()` and `View.button()` still add children to an implicit root Column.
 `View.row()` and `View.column()` return stable `Widget*` container handles.
-Containers expose the same creation methods, including `checkbox()`:
+Containers expose the same creation methods, including `checkbox()`. The Button
+handler is optional, which lets `@on_click` attach it. The underlying
+callback API takes `void*` contexts:
 
 ```c3
 Widget* panel = view.column({ .padding = 12, .gap = 8, .max_width = 360 });
@@ -129,6 +177,7 @@ before notifying the callback. With a checked binding, activation only **propose
 the next value. The application may accept it by setting State, reject it by
 leaving State unchanged, or apply it later. Activation preserves the binding.
 Programmatic and binding updates never emit user-change callbacks.
+`checkbox.@checked(&shown)` installs exactly this accepting pair. Written by hand:
 
 ```c3
 fn bool shown_value(void* context)
@@ -248,7 +297,7 @@ c3c build --path examples/window
 python3 -m unittest discover -s tests -v
 ```
 
-C3 tests cover bindings, independent property cleanup, layout, shared keyboard
+C3 tests cover bindings, typed modifiers, independent property cleanup, layout, shared keyboard
 lifecycle, callback removal, X11 event translation, and (when built on Windows)
 Win32 repeat metadata. The default Python suite runs simulated X11 tests on
 Linux and skips desktop tests. Simulation includes complete key cycles, explicit

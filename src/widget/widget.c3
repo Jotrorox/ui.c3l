@@ -135,21 +135,21 @@ fn Widget* add_widget(View* self, WidgetKind kind, String text, Widget* parent =
 fn Widget* View.text(&self, String text = "") => add_widget(self, TEXT, text);
 fn Widget* Widget.text(&self, String text = "") => add_widget(self.owner, TEXT, text, self);
 
-fn Widget* View.button(&self, String label, ClickHandler on_click, void* context = null)
+fn Widget* add_button(View* self, String label, ClickHandler on_click, void* context,
+	Widget* parent = null) @private
 {
-	Widget* widget = add_widget(self, BUTTON, label);
+	Widget* widget = add_widget(self, BUTTON, label, parent);
 	widget.on_click = on_click;
 	widget.click_context = context;
 	return widget;
 }
 
-fn Widget* Widget.button(&self, String label, ClickHandler on_click, void* context = null)
-{
-	Widget* widget = add_widget(self.owner, BUTTON, label, self);
-	widget.on_click = on_click;
-	widget.click_context = context;
-	return widget;
-}
+// The handler is optional; `button("Save").@on_click(&app, fn (a) { ... })`
+// attaches a typed one.
+fn Widget* View.button(&self, String label, ClickHandler on_click = null, void* context = null) =>
+	add_button(self, label, on_click, context);
+fn Widget* Widget.button(&self, String label, ClickHandler on_click = null, void* context = null) =>
+	add_button(self.owner, label, on_click, context, self);
 
 fn Widget* add_checkbox(View* self, String label, bool checked, CheckHandler on_change,
 	void* context, Widget* parent = null) @private
