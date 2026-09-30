@@ -18,8 +18,7 @@ fn Rect Rect.intersect(self, Rect other)
 
 alias MeasureText = fn Size(void* context, String text);
 
-// The root owns a persistent list of leaf widgets, arranged vertically. More
-// container kinds can later reuse Widget, the dependency graph and Renderer.
+// The View owns every node in a tree with an implicit, viewport-sized Column.
 // Zero initialization is sufficient. Do not copy a View after adding widgets.
 struct View
 {
@@ -30,11 +29,18 @@ struct View
 	Widget* focused;
 	Binding* pending_head;
 	Binding* pending_tail;
-	Widget* measure_head;
 	Rect damage;
 	int width;
 	int height;
 	bool layout_dirty;
+	bool subtree_layout_dirty;
+	bool measure_dirty;
+	bool custom_root_spacing;
+	int root_padding;
+	int root_gap;
+	int pointer_x;
+	int pointer_y;
+	bool pointer_known;
 	bool opened;
 	MeasureText measure_text;
 	void* measure_context;
@@ -52,6 +58,7 @@ fn void View.invalidate(&self, Rect rect)
 
 fn void View.resize(&self, int width, int height)
 {
+	assert(!active_binding, "Bindings cannot resize views");
 	if (self.width == width && self.height == height) return;
 	self.width = math::max(0, width);
 	self.height = math::max(0, height);
@@ -61,12 +68,14 @@ fn void View.resize(&self, int width, int height)
 
 fn void View.set_measurer(&self, MeasureText measure, void* context = null)
 {
+	assert(!active_binding, "Bindings cannot change text metrics");
 	self.measure_text = measure;
 	self.measure_context = context;
-	for (Widget* widget = self.first; widget; widget = widget.next)
+	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
 	{
+		if (widget.is_container()) continue;
 		widget.request_measure();
-		self.invalidate(widget.bounds);
+		self.invalidate(widget.visible);
 	}
 }
 
@@ -76,8 +85,8 @@ fn Size measure_default(void* context, String text) @private => @pool()
 	return { (int)text.to_temp_utf32()!!.len * 8, 16 };
 }
 
-// Native event loops flush once after each input event, coalescing repeated sets.
-// Headless callers can flush explicitly; no clean binding is reevaluated.
+// Native event loops flush after each event; input also flushes before targeting.
+// Repeated state writes coalesce. No clean binding is reevaluated.
 fn void View.update(&self)
 {
 	assert(!active_binding, "Bindings cannot recursively update a view");
@@ -90,37 +99,28 @@ fn void View.update(&self)
 		binding.pending_next = null;
 		binding.run();
 	}
-	while (self.measure_head)
+	if (self.measure_dirty)
 	{
-		Widget* widget = self.measure_head;
-		self.measure_head = widget.measure_next;
-		widget.measure_next = null;
-		widget.measure_dirty = false;
-		Size size = self.measure_text ? self.measure_text(self.measure_context, widget.content) :
-			measure_default(null, widget.content);
-		widget.text_size = size;
-		if (widget.kind == BUTTON) { size.width += 24; size.height += 16; }
-		if (size.width != widget.desired.width || size.height != widget.desired.height)
-		{
-			widget.desired = size;
-			self.layout_dirty = true;
-		}
+		for (Widget* widget = self.first; widget; widget = widget.next) widget.measure();
+		self.measure_dirty = false;
 	}
-	if (!self.layout_dirty) return;
-	self.layout_dirty = false;
-	int y = 16;
-	for (Widget* widget = self.first; widget; widget = widget.next)
+	if (self.layout_dirty || self.subtree_layout_dirty)
 	{
-		Rect bounds = { 16, y, math::min(widget.desired.width, math::max(0, self.width - 32)), widget.desired.height };
-		if (bounds.x != widget.bounds.x || bounds.y != widget.bounds.y ||
-			bounds.width != widget.bounds.width || bounds.height != widget.bounds.height)
+		int padding = self.custom_root_spacing ? self.root_padding : 16;
+		int gap = self.custom_root_spacing ? self.root_gap : 8;
+		Rect content = inset({ 0, 0, self.width, self.height }, padding);
+		int y = content.y;
+		for (Widget* widget = self.first; widget; widget = widget.next)
 		{
-			self.invalidate(widget.bounds);
-			widget.bounds = bounds;
-			self.invalidate(bounds);
+			Rect bounds = self.layout_dirty ? (Rect) { content.x, y,
+				math::min(widget.desired.width, content.width), widget.desired.height } : widget.bounds;
+			widget.place(bounds, content);
+			y = layout_add(y, layout_add(widget.desired.height, gap));
 		}
-		y = math::min(65535, y + widget.desired.height + 8);
+		self.layout_dirty = false;
+		self.subtree_layout_dirty = false;
 	}
+	self.reconcile_input();
 }
 
 fn Rect View.take_damage(&self)

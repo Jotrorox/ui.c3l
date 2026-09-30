@@ -6,10 +6,13 @@ example themselves do not link libX11. Works with Xvfb and with Windows desktops
 import ctypes as c
 from ctypes import wintypes
 import os
+import json
 from pathlib import Path
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -58,6 +61,7 @@ class X11Desktop:
             "XSendEvent": ([c.c_void_p, c.c_ulong, c.c_int, c.c_long, c.POINTER(XEvent)], c.c_int),
             "XFlush": ([c.c_void_p], c.c_int),
             "XKeysymToKeycode": ([c.c_void_p, c.c_ulong], c.c_ubyte),
+            "XResizeWindow": ([c.c_void_p, c.c_ulong, c.c_uint, c.c_uint], c.c_int),
             "XCloseDisplay": ([c.c_void_p], c.c_int),
         }
         for name, (args, result) in declarations.items():
@@ -118,6 +122,32 @@ class X11Desktop:
                 raise RuntimeError("XSendEvent failed")
         self.api.XFlush(self.display)
 
+    def input(self, window, kind, detail, x=0, y=0):
+        event = XEvent()
+        event.input = XInputEvent(type=kind, display=self.display, window=window,
+                                  root=self.api.XDefaultRootWindow(self.display),
+                                  x=x, y=y, detail=detail, same_screen=1)
+        mask = {2: 1, 4: 1 << 2, 5: 1 << 3}[kind]
+        if not self.api.XSendEvent(self.display, window, 0, mask, c.byref(event)):
+            raise RuntimeError("XSendEvent failed")
+        self.api.XFlush(self.display)
+
+    def click(self, window, rect):
+        x, y, width, height = rect
+        self.input(window, 4, 1, x + width // 2, y + height // 2)
+        self.input(window, 5, 1, x + width // 2, y + height // 2)
+
+    def key(self, window, name):
+        symbol = {"Tab": 0xFF09, "Return": 0xFF0D, "Space": 0x20}[name]
+        code = self.api.XKeysymToKeycode(self.display, symbol)
+        if not code:
+            raise RuntimeError(f"no key mapped for {name}")
+        self.input(window, 2, code)
+
+    def resize(self, window, width, height):
+        self.api.XResizeWindow(self.display, window, width, height)
+        self.api.XFlush(self.display)
+
     def close(self):
         self.api.XCloseDisplay(self.display)
 
@@ -129,6 +159,9 @@ class WindowsDesktop:
         self.api.FindWindowW.restype = wintypes.HWND
         self.api.IsWindowVisible.argtypes = [wintypes.HWND]
         self.api.GetClientRect.argtypes = [wintypes.HWND, c.POINTER(wintypes.RECT)]
+        self.api.GetWindowRect.argtypes = [wintypes.HWND, c.POINTER(wintypes.RECT)]
+        self.api.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, c.c_int, c.c_int,
+                                         c.c_int, c.c_int, wintypes.UINT]
         self.api.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 
     def find(self, title):
@@ -151,12 +184,131 @@ class WindowsDesktop:
             if not self.api.PostMessageW(window, message, wparam, lparam):
                 raise c.WinError(c.get_last_error())
 
+    def click(self, window, rect):
+        x, y, width, height = rect
+        position = (x + width // 2) | ((y + height // 2) << 16)
+        for message, wparam in ((0x201, 1), (0x202, 0)):
+            if not self.api.PostMessageW(window, message, wparam, position):
+                raise c.WinError(c.get_last_error())
+
+    def key(self, window, name):
+        key = {"Tab": 9, "Return": 13, "Space": 32}[name]
+        if not self.api.PostMessageW(window, 0x100, key, 0):
+            raise c.WinError(c.get_last_error())
+
+    def resize(self, window, width, height):
+        rect = wintypes.RECT()
+        if not self.api.GetWindowRect(window, c.byref(rect)):
+            raise c.WinError(c.get_last_error())
+        old_width, old_height = self.size(window)
+        width += rect.right - rect.left - old_width
+        height += rect.bottom - rect.top - old_height
+        if not self.api.SetWindowPos(window, None, 0, 0, width, height, 0x16):
+            raise c.WinError(c.get_last_error())
+
     def close(self):
         pass
 
 
 @unittest.skipUnless(os.environ.get("UI_NATIVE_TESTS") == "1", "set UI_NATIVE_TESTS=1 to open test windows")
 class NativeWindowTests(unittest.TestCase):
+    def test_nested_input_resize_clipping_and_subtree_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            suffix = ".exe" if sys.platform == "win32" else ""
+            binary = Path(directory) / ("nested_window_test" + suffix)
+            subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/nested_window.c3"),
+                            "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(binary),
+                            "--obj-out", directory], check=True)
+            desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
+            try:
+                with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True) as process:
+                    lines = queue.Queue()
+
+                    def read_lines():
+                        for line in process.stdout:
+                            lines.put(line)
+
+                    reader = threading.Thread(target=read_lines, daemon=True)
+                    reader.start()
+
+                    def snapshot():
+                        try:
+                            return json.loads(lines.get(timeout=5))
+                        except queue.Empty:
+                            self.fail(f"nested fixture did not report geometry (exit={process.poll()})")
+
+                    try:
+                        deadline = time.monotonic() + 5
+                        window = None
+                        while time.monotonic() < deadline and process.poll() is None:
+                            window = desktop.find("ui nested test")
+                            if window:
+                                break
+                            time.sleep(0.02)
+                        self.assertTrue(window, "nested window did not appear")
+                        # Ask the fixture for geometry after native measurement and placement.
+                        desktop.key(window, "Tab")
+                        desktop.key(window, "Return")
+                        initial = snapshot()
+                        self.assertEqual(initial["count"], 0)
+                        self.assertGreater(initial["action"][2], 0)
+                        desktop.click(window, initial["action"])
+                        state = snapshot()
+                        self.assertEqual((state["count"], state["label"]), (1, "Count: 1"))
+                        # Use the clipped origin: the overflowing lower portion can
+                        # overlap the separate, visible removal button.
+                        desktop.click(window, (*initial["hidden"][:2], 1, 1))
+                        desktop.click(window, initial["inspect"])
+                        state = snapshot()
+                        self.assertEqual(state["hidden_clicks"], 0)
+                        self.assertTrue(state["alive"])
+
+                        # Confirm descendant activation before asking the window manager
+                        # to resize; native resize and posted input may arrive separately.
+                        desktop.key(window, "Tab")
+                        desktop.key(window, "Space")
+                        self.assertEqual(snapshot()["count"], 2)
+                        narrow = initial["action_bounds"][0]
+                        desktop.resize(window, narrow, initial["viewport"][1])
+                        deadline = time.monotonic() + 5
+                        while desktop.size(window)[0] != narrow and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        self.assertEqual(desktop.size(window)[0], narrow)
+                        desktop.key(window, "Return")
+                        desktop.key(window, "Tab")
+                        desktop.key(window, "Return")
+                        clipped = snapshot()
+                        self.assertEqual(clipped["count"], 2, clipped)
+                        self.assertEqual(clipped["action"][2], 0)
+                        desktop.resize(window, *initial["viewport"])
+                        deadline = time.monotonic() + 5
+                        while desktop.size(window) != tuple(initial["viewport"]) and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        self.assertEqual(desktop.size(window), tuple(initial["viewport"]))
+                        desktop.click(window, initial["inspect"])
+                        restored = snapshot()
+                        self.assertEqual(restored["action"], initial["action"])
+                        desktop.click(window, restored["action"])
+                        self.assertEqual(snapshot()["count"], 3)
+                        desktop.click(window, restored["remove"])
+                        desktop.click(window, restored["inspect"])
+                        removed = snapshot()
+                        self.assertEqual(removed["count"], 4)
+                        self.assertFalse(removed["alive"] or removed["subscribed"] or removed["pending"])
+                        desktop.click(window, initial["action"])
+                        desktop.click(window, removed["inspect"])
+                        self.assertEqual(snapshot()["count"], 4)
+                        desktop.close_window(window)
+                        self.assertEqual(process.wait(timeout=5), 0, process.stderr.read())
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=5)
+                        reader.join(timeout=5)
+            finally:
+                desktop.close()
+
     def test_reactive_widgets_draw_and_receive_input(self):
         with tempfile.TemporaryDirectory() as directory:
             suffix = ".exe" if sys.platform == "win32" else ""

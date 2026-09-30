@@ -147,8 +147,10 @@ class X11IntegrationTests(unittest.TestCase):
                                 reply = bytearray(32 + 248 * 4)
                                 reply[0:2] = bytes([1, 1])
                                 struct.pack_into("<HI", reply, 2, sequence, 248)
-                                for key, symbol in ((23, 0xFF09), (36, 0xFF0D), (65, 0x20)):
-                                    struct.pack_into("<I", reply, 32 + (key - 8) * 4, symbol)
+                                keycodes = {symbol: request[4] + index
+                                            for index, symbol in enumerate((0xFF09, 0xFF0D, 0x20))}
+                                for symbol, key in keycodes.items():
+                                    struct.pack_into("<I", reply, 32 + (key - request[4]) * 4, symbol)
                                 connection.sendall(reply)
                             elif opcode == 55 and widgets:  # CreateGC
                                 self.assertEqual(struct.unpack_from("<II", request, 4), (0x200003, 0x100))
@@ -169,8 +171,10 @@ class X11IntegrationTests(unittest.TestCase):
                             stage = 0
                             labels = []
                             fills = []
+                            clips = {}
+                            current_clip = None
 
-                            def input_event(kind, detail, x=20, y=45):
+                            def input_event(kind, detail, x=0, y=0):
                                 event = bytearray(32)
                                 event[0:2] = bytes([kind | 0x80, detail])
                                 struct.pack_into("<I", event, 12, window)
@@ -182,6 +186,8 @@ class X11IntegrationTests(unittest.TestCase):
                                 opcode, _, words = struct.unpack("<BBH", header)
                                 request = header + read_exact(connection, words * 4 - 4)
                                 self.assertIn(opcode, (56, 59, 70, 75))
+                                if opcode == 59:
+                                    current_clip = struct.unpack_from("<hhHH", request, 12)
                                 if opcode == 70:
                                     fills.append(struct.unpack_from("<hhHH", request, 12))
                                 if opcode != 75:
@@ -189,19 +195,26 @@ class X11IntegrationTests(unittest.TestCase):
                                 self.assertEqual(struct.unpack_from("<II", request, 4), (window, 0x200003))
                                 label = request[18:18 + request[16] * 2].decode("utf-16-be")
                                 labels.append(label)
-                                if stage == 0 and label == "Increment":
+                                clips[label] = current_clip
+                                if stage == 0 and label == "Reset":
                                     self.assertIn("Count: 5", labels)
                                     self.assertIn((0, 0, 800, 600), fills)
+                                    # Both buttons are descendants of a Row inside a Column.
+                                    left = clips["Increment"]
+                                    right = clips["Reset"]
+                                    self.assertEqual(left[1], right[1])
+                                    self.assertGreater(right[0], left[0] + left[2])
                                     labels.clear()
                                     fills.clear()
-                                    input_event(4, 1)
-                                    input_event(5, 1)
+                                    x, y = left[0] + left[2] // 2, left[1] + left[3] // 2
+                                    input_event(4, 1, x, y)
+                                    input_event(5, 1, x, y)
                                     stage = 1
                                 elif stage == 1 and "Count: 6" in labels and label == "Increment":
                                     # The click repaints damaged widgets, not the whole window.
                                     self.assertNotIn((0, 0, 800, 600), fills)
                                     labels.clear()
-                                    input_event(2, 36)  # Return activates the focused button.
+                                    input_event(2, keycodes[0xFF0D])  # Mapped Return key.
                                     stage = 2
                                 elif stage == 2 and label == "Count: 7":
                                     stage = 3

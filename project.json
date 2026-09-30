@@ -9,7 +9,8 @@
   "test-sources": [
     "tests/options.c3",
     "tests/x11.c3",
-    "tests/reactive.c3"
+    "tests/reactive.c3",
+    "tests/layout.c3"
   ],
   "build-dir": "build",
   "output": "build",

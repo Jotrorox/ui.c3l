@@ -285,6 +285,7 @@ fn void focus_wraps_in_both_directions_and_skips_non_buttons() @test
 {
 	View view;
 	defer view.free();
+	view.resize(800, 600); // Fully clipped widgets are not focusable.
 	view.text("heading");
 	Widget* first = view.button("first", null);
 	Widget* disabled = view.button("disabled", null);

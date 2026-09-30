@@ -111,6 +111,7 @@ fn void Widget.unbind(&self)
 // evaluate subscribe automatically, including reads in helper functions.
 fn void Widget.bind(&self, TextBinding evaluate, void* context = null)
 {
+	assert(!self.is_container(), "Only Text and Button widgets have labels");
 	assert(evaluate != null);
 	self.unbind();
 	self.binding = mem::new(Binding, { .widget = self, .evaluate = evaluate, .context = context });

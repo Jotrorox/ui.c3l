@@ -28,13 +28,14 @@ fn void? Renderer.border(&self, Rect rect, Ink ink)
 // widget identities survive both paint and layout passes.
 fn void? View.paint(&self, Renderer* renderer, Rect clip)
 {
+	clip = clip.intersect({ 0, 0, self.width, self.height });
 	if (clip.empty()) return;
 	renderer.clip(renderer.context, clip)!;
 	renderer.fill(renderer.context, clip, PAPER)!;
-	for (Widget* widget = self.first; widget; widget = widget.next)
+	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
 	{
-		if (widget.bounds.intersect(clip).empty()) continue;
-		renderer.clip(renderer.context, widget.bounds.intersect(clip))!;
+		if (widget.is_container() || widget.visible.intersect(clip).empty()) continue;
+		renderer.clip(renderer.context, widget.visible.intersect(clip))!;
 		Rect rect = widget.bounds;
 		Ink foreground = INK;
 		int x = rect.x;
@@ -56,7 +57,7 @@ fn void? View.paint(&self, Renderer* renderer, Rect clip)
 			y += 8;
 		}
 		renderer.text(renderer.context, widget.content, x, y, foreground)!;
-		if (widget.disabled)
+		if (!widget.is_enabled())
 		{
 			renderer.fill(renderer.context, { x, y + widget.text_size.height / 2, widget.text_size.width, 1 }, foreground)!;
 		}
