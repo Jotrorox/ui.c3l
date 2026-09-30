@@ -1,0 +1,20 @@
+{
+  "langrev": "1",
+  "dependency-search-paths": [
+    ".."
+  ],
+  "dependencies": [
+    "ui"
+  ],
+  "test-sources": [
+    "tests/options.c3",
+    "tests/x11.c3"
+  ],
+  "build-dir": "build",
+  "output": "build",
+  "targets": {
+    "ui-tests": {
+      "type": "test"
+    }
+  }
+}

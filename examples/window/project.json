@@ -1,0 +1,13 @@
+{
+  "langrev": "1",
+  "dependency-search-paths": ["../../.."],
+  "dependencies": ["ui"],
+  "sources": ["src/**"],
+  "build-dir": "build",
+  "output": "build",
+  "targets": {
+    "window": {
+      "type": "executable"
+    }
+  }
+}

@@ -1,6 +1,5 @@
 {
   "provides" : "ui",
-  "license" : "BSD-2-Clause",
   "linklib-dir" : "linked-libs",
   "targets" : {
     "linux-aarch64" : {
@@ -28,25 +27,19 @@
       "dependencies" : [],
       "linked-libraries" : []
     },
-    "macos-aarch64" : {
-      "link-args" : [],
-      "dependencies" : [],
-      "linked-libraries" : []
-    },
-    "macos-x64" : {
-      "link-args" : [],
-      "dependencies" : [],
-      "linked-libraries" : []
-    },
     "windows-aarch64" : {
       "link-args" : [],
       "dependencies" : [],
-      "linked-libraries" : []
+      "linked-libraries" : ["user32", "kernel32"]
     },
     "windows-x64" : {
       "link-args" : [],
       "dependencies" : [],
-      "linked-libraries" : []
+      "linked-libraries" : ["user32", "kernel32"]
     }
+  },
+  "sources" : ["src/**"],
+  "vendor" : {
+    "license" : "BSD-2-Clause"
   }
 }
