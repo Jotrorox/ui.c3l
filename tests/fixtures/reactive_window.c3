@@ -5,6 +5,7 @@ struct Counter
 {
 	State{int} count;
 	Widget* label;
+	Widget* button;
 }
 
 fn String label_text(void* context)
@@ -17,6 +18,8 @@ fn void increment(void* context)
 {
 	Counter* counter = context;
 	counter.count.set(counter.count.get() + 1);
+	Rect rect = counter.button.visible;
+	io::printfn("[%s,%s,%s,%s]", rect.x, rect.y, rect.width, rect.height);
 }
 
 fn int main()
@@ -24,7 +27,7 @@ fn int main()
 	Counter counter;
 	View view;
 	defer view.free();
-	view.button("Increment", &increment, &counter);
+	counter.button = view.button("Increment", &increment, &counter);
 	counter.label = view.text();
 	counter.label.bind(&label_text, &counter);
 	if (catch error = view.open("ui reactive test", width: 321, height: 234))

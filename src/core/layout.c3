@@ -17,6 +17,9 @@ struct Layout
 }
 
 const int LAYOUT_LIMIT = 65535;
+const int CHECKBOX_SIZE = 16;
+const int CHECKBOX_PADDING = 4;
+const int CHECKBOX_GAP = 8;
 
 fn bool Layout.valid(self)
 {
@@ -76,7 +79,8 @@ fn void Widget.request_size(&self)
 {
 	for (Widget* widget = self; widget; widget = widget.parent)
 	{
-		if (widget.measure_dirty) break;
+		// Hidden subtrees can retain dirty caches after ancestors are measured.
+		// Always propagate through them when another property changes.
 		widget.measure_dirty = true;
 	}
 	self.owner.measure_dirty = true;
@@ -93,7 +97,6 @@ fn void Widget.request_layout(&self)
 	self.layout_dirty = true;
 	for (Widget* widget = self.parent; widget; widget = widget.parent)
 	{
-		if (widget.subtree_layout_dirty) break;
 		widget.subtree_layout_dirty = true;
 	}
 	self.owner.subtree_layout_dirty = true;
@@ -103,26 +106,29 @@ fn void Widget.request_layout(&self)
 // line. A clean subtree is pruned, and layout-only edits reuse text metrics.
 fn void Widget.measure(&self)
 {
-	if (!self.measure_dirty) return;
+	if (self.hidden || !self.measure_dirty) return;
 	self.measure_dirty = false;
 	Size size;
 	if (self.is_container())
 	{
+		bool preceding;
 		for (Widget* child = self.first; child; child = child.next)
 		{
+			if (child.hidden) continue;
 			child.measure();
 			if (self.kind == ROW)
 			{
 				size.width = layout_add(size.width, child.desired.width);
-				if (child.previous) size.width = layout_add(size.width, self.layout.gap);
+				if (preceding) size.width = layout_add(size.width, self.layout.gap);
 				size.height = math::max(size.height, child.desired.height);
 			}
 			else
 			{
 				size.height = layout_add(size.height, child.desired.height);
-				if (child.previous) size.height = layout_add(size.height, self.layout.gap);
+				if (preceding) size.height = layout_add(size.height, self.layout.gap);
 				size.width = math::max(size.width, child.desired.width);
 			}
+			preceding = true;
 		}
 		size.width = layout_add(size.width, self.layout.padding * 2);
 		size.height = layout_add(size.height, self.layout.padding * 2);
@@ -144,6 +150,12 @@ fn void Widget.measure(&self)
 			size.width = layout_add(size.width, 24);
 			size.height = layout_add(size.height, 16);
 		}
+		else if (self.kind == CHECKBOX)
+		{
+			size.width = layout_add(CHECKBOX_SIZE + CHECKBOX_PADDING * 2,
+				self.content.len ? layout_add(CHECKBOX_GAP, size.width) : 0);
+			size.height = layout_add(math::max(CHECKBOX_SIZE, size.height), CHECKBOX_PADDING * 2);
+		}
 	}
 	Layout layout = self.layout;
 	size.width = constrain(size.width, layout.width, layout.min_width, layout.max_width);
@@ -159,6 +171,7 @@ fn void Widget.measure(&self)
 // Every ancestor clips descendants to its padded content rectangle.
 fn void Widget.place(&self, Rect bounds, Rect ancestor_clip)
 {
+	if (self.hidden) { collapse_geometry(self); return; }
 	Rect visible = bounds.intersect(ancestor_clip);
 	bool changed = !rect_equal(bounds, self.bounds) || !rect_equal(visible, self.visible);
 	if (!changed && !self.layout_dirty && !self.subtree_layout_dirty) return;
@@ -177,6 +190,7 @@ fn void Widget.place(&self, Rect bounds, Rect ancestor_clip)
 		int y = content.y;
 		for (Widget* child = self.first; child; child = child.next)
 		{
+			if (child.hidden) { collapse_geometry(child); continue; }
 			Rect rect = child.bounds;
 			if (changed || self.layout_dirty)
 			{

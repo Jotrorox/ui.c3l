@@ -181,15 +181,24 @@ class X11IntegrationTests(unittest.TestCase):
                                 struct.pack_into("<hh", event, 24, x, y)
                                 connection.sendall(event)
 
-                            while stage < 3:
+                            foreground = None
+                            colored_fills = []
+                            checkbox_mark = None
+                            unchecked_drawn = False
+                            checked_drawn = False
+                            while stage < 5:
                                 header = read_exact(connection, 4)
                                 opcode, _, words = struct.unpack("<BBH", header)
                                 request = header + read_exact(connection, words * 4 - 4)
                                 self.assertIn(opcode, (56, 59, 70, 75))
                                 if opcode == 59:
                                     current_clip = struct.unpack_from("<hhHH", request, 12)
+                                if opcode == 56:
+                                    foreground = struct.unpack_from("<I", request, 12)[0]
                                 if opcode == 70:
-                                    fills.append(struct.unpack_from("<hhHH", request, 12))
+                                    rect = struct.unpack_from("<hhHH", request, 12)
+                                    fills.append(rect)
+                                    colored_fills.append((rect, foreground))
                                 if opcode != 75:
                                     continue
                                 self.assertEqual(struct.unpack_from("<II", request, 4), (window, 0x200003))
@@ -199,6 +208,9 @@ class X11IntegrationTests(unittest.TestCase):
                                 if stage == 0 and label == "Reset":
                                     self.assertIn("Count: 5", labels)
                                     self.assertIn((0, 0, 800, 600), fills)
+                                    toggle = clips["Show counter"]
+                                    checkbox_mark = (toggle[0] + 8, toggle[1] + (toggle[3] - 16) // 2 + 4, 8, 8)
+                                    self.assertIn((checkbox_mark, 0), colored_fills)
                                     # Both buttons are descendants of a Row inside a Column.
                                     left = clips["Increment"]
                                     right = clips["Reset"]
@@ -217,7 +229,31 @@ class X11IntegrationTests(unittest.TestCase):
                                     input_event(2, keycodes[0xFF0D])  # Mapped Return key.
                                     stage = 2
                                 elif stage == 2 and label == "Count: 7":
+                                    labels.clear()
+                                    colored_fills.clear()
+                                    x, y = toggle[0] + toggle[2] // 2, toggle[1] + toggle[3] // 2
+                                    input_event(4, 1, x, y)
+                                    input_event(5, 1, x, y)
                                     stage = 3
+                                elif stage == 3 and label == "Show counter":
+                                    # Mouse-down paints the old checked mark in white.
+                                    # Mouse-up collapses the section and paints no mark.
+                                    if not any(rect == checkbox_mark for rect, _ in colored_fills):
+                                        unchecked_drawn = True
+                                        labels.clear()
+                                        input_event(2, keycodes[0x20])  # Restore with mapped Space.
+                                        stage = 4
+                                    colored_fills.clear()
+                                elif stage == 4:
+                                    if label == "Show counter":
+                                        self.assertIn((checkbox_mark, 0), colored_fills)
+                                        checked_drawn = True
+                                    if label == "Reset":
+                                        self.assertTrue(unchecked_drawn and checked_drawn)
+                                        self.assertIn("Count: 7", labels)
+                                        self.assertEqual(clips["Increment"], left)
+                                        self.assertEqual(clips["Reset"], right)
+                                        stage = 5
                         if mode == "protocol_error":
                             connection.sendall(bytes(32))
                         elif mode == "event_disconnect":

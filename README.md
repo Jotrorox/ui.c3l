@@ -1,7 +1,7 @@
 # ui.c3l
 
 A small reactive retained-mode UI library for Windows and Linux (X11/XWayland),
-with text, buttons, and nested rows and columns. Requires C3 0.8.4 or newer.
+with text, buttons, checkboxes, and nested rows and columns. Requires C3 0.8.4 or newer.
 
 Run the [counter example](examples/window):
 

@@ -34,7 +34,7 @@ fn void? View.paint(&self, Renderer* renderer, Rect clip)
 	renderer.fill(renderer.context, clip, PAPER)!;
 	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
 	{
-		if (widget.is_container() || widget.visible.intersect(clip).empty()) continue;
+		if (widget.is_container() || !widget.is_visible() || widget.visible.intersect(clip).empty()) continue;
 		renderer.clip(renderer.context, widget.visible.intersect(clip))!;
 		Rect rect = widget.bounds;
 		Ink foreground = INK;
@@ -55,6 +55,21 @@ fn void? View.paint(&self, Renderer* renderer, Rect clip)
 			}
 			x += 12;
 			y += 8;
+		}
+		else if (widget.kind == CHECKBOX)
+		{
+			Rect box = { x + CHECKBOX_PADDING, y + (rect.height - CHECKBOX_SIZE) / 2,
+				CHECKBOX_SIZE, CHECKBOX_SIZE };
+			bool down = self.pressed == widget && self.hovered == widget;
+			if (down) renderer.fill(renderer.context, box, INK)!;
+			renderer.border(box, INK)!;
+			if (widget.checked) renderer.fill(renderer.context, inset(box, 4), down ? PAPER : INK)!;
+			if (self.focused == widget || self.hovered == widget)
+			{
+				renderer.border(rect, INK)!;
+			}
+			x += CHECKBOX_PADDING + CHECKBOX_SIZE + CHECKBOX_GAP;
+			y += (rect.height - widget.text_size.height) / 2;
 		}
 		renderer.text(renderer.context, widget.content, x, y, foreground)!;
 		if (!widget.is_enabled())

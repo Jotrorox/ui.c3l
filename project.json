@@ -10,7 +10,9 @@
     "tests/options.c3",
     "tests/x11.c3",
     "tests/reactive.c3",
-    "tests/layout.c3"
+    "tests/layout.c3",
+    "tests/properties.c3",
+    "tests/checkbox.c3"
   ],
   "build-dir": "build",
   "output": "build",

@@ -4,6 +4,7 @@ Uses the OS APIs through ctypes only in the test driver. The Linux library and
 example themselves do not link libX11. Works with Xvfb and with Windows desktops.
 """
 import ctypes as c
+from contextlib import contextmanager
 from ctypes import wintypes
 import os
 import json
@@ -111,17 +112,6 @@ class X11Desktop:
             raise RuntimeError("XSendEvent failed")
         self.api.XFlush(self.display)
 
-    def click_and_activate(self, window):
-        for kind, detail, mask in ((4, 1, 1 << 2), (5, 1, 1 << 3),
-                                   (2, self.api.XKeysymToKeycode(self.display, 0x20), 1)):
-            event = XEvent()
-            event.input = XInputEvent(type=kind, display=self.display, window=window,
-                                      root=self.api.XDefaultRootWindow(self.display),
-                                      x=20, y=20, detail=detail, same_screen=1)
-            if not self.api.XSendEvent(self.display, window, 0, mask, c.byref(event)):
-                raise RuntimeError("XSendEvent failed")
-        self.api.XFlush(self.display)
-
     def input(self, window, kind, detail, x=0, y=0):
         event = XEvent()
         event.input = XInputEvent(type=kind, display=self.display, window=window,
@@ -178,12 +168,6 @@ class WindowsDesktop:
         if not self.api.PostMessageW(window, 0x10, 0, 0):  # WM_CLOSE
             raise c.WinError(c.get_last_error())
 
-    def click_and_activate(self, window):
-        for message, wparam, lparam in ((0x201, 1, 20 | (20 << 16)),
-                                         (0x202, 0, 20 | (20 << 16)), (0x100, 32, 0)):
-            if not self.api.PostMessageW(window, message, wparam, lparam):
-                raise c.WinError(c.get_last_error())
-
     def click(self, window, rect):
         x, y, width, height = rect
         position = (x + width // 2) | ((y + height // 2) << 16)
@@ -212,6 +196,119 @@ class WindowsDesktop:
 
 @unittest.skipUnless(os.environ.get("UI_NATIVE_TESTS") == "1", "set UI_NATIVE_TESTS=1 to open test windows")
 class NativeWindowTests(unittest.TestCase):
+    @contextmanager
+    def fixture(self, name, title):
+        with tempfile.TemporaryDirectory() as directory:
+            suffix = ".exe" if sys.platform == "win32" else ""
+            binary = Path(directory) / (name + suffix)
+            subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures" / (name + ".c3")),
+                            "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(binary),
+                            "--obj-out", directory], check=True)
+            desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
+            try:
+                with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True) as process:
+                    lines = queue.Queue()
+
+                    def read_lines():
+                        for line in process.stdout:
+                            lines.put(line)
+
+                    reader = threading.Thread(target=read_lines, daemon=True)
+                    reader.start()
+
+                    def snapshot():
+                        try:
+                            return json.loads(lines.get(timeout=5))
+                        except queue.Empty:
+                            self.fail(f"{name} did not report geometry (exit={process.poll()})")
+
+                    try:
+                        deadline = time.monotonic() + 5
+                        window = None
+                        while time.monotonic() < deadline and process.poll() is None:
+                            window = desktop.find(title)
+                            if window:
+                                break
+                            time.sleep(0.02)
+                        self.assertTrue(window, f"{name} window did not appear")
+                        yield desktop, window, snapshot
+                        desktop.close_window(window)
+                        self.assertEqual(process.wait(timeout=5), 0, process.stderr.read())
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=5)
+                        reader.join(timeout=5)
+            finally:
+                desktop.close()
+
+    def test_checkbox_properties_visibility_and_native_activation(self):
+        with self.fixture("checkbox_window", "ui checkbox test") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            self.assertEqual(initial["label"], "Value: 0")
+            self.assertTrue(initial["shown"] and initial["enabled"])
+            desktop.click(window, initial["bound"])
+            state = snapshot()
+            self.assertEqual((state["checked"], state["changes"]), (True, 1))
+            desktop.key(window, "Space")
+            state = snapshot()
+            self.assertEqual((state["checked"], state["changes"]), (False, 2))
+            desktop.key(window, "Return")  # Enter explicitly toggles, too.
+            state = snapshot()
+            self.assertEqual((state["checked"], state["changes"]), (True, 3))
+            desktop.click(window, initial["owned"])
+            state = snapshot()
+            self.assertEqual((state["owned_checked"], state["own_changes"]), (True, 1))
+            self.assertEqual(initial["clipped"][2:4], [0, 0])
+            desktop.click(window, (*initial["clipped_bounds"][:2], 1, 1))
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["clipped_changes"], 0)
+
+            desktop.click(window, initial["show"])
+            hidden = snapshot()
+            self.assertFalse(hidden["shown"])
+            self.assertEqual(hidden["bound"][2:4], [0, 0])
+            self.assertLess(hidden["footer"][1], initial["footer"][1])
+            desktop.click(window, hidden["mutate"])
+            state = snapshot()
+            self.assertEqual((state["label"], state["checked"], state["changes"]), ("Value: 1", False, 3))
+            desktop.click(window, hidden["show"])
+            restored = snapshot()
+            self.assertEqual(restored["bound"], initial["bound"])
+            self.assertEqual(restored["footer"], initial["footer"])
+            self.assertEqual(restored["label"], "Value: 1")
+            self.assertTrue(restored["owned_checked"])
+            desktop.key(window, "Space")
+            self.assertFalse(snapshot()["shown"])
+            desktop.key(window, "Return")
+            self.assertTrue(snapshot()["shown"])
+
+            desktop.click(window, initial["enable"])
+            self.assertFalse(snapshot()["enabled"])
+            desktop.click(window, initial["bound"])
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["changes"], 3)
+            for _ in range(4):  # Skip all disabled descendants and wrap to Inspect.
+                desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            self.assertFalse(snapshot()["enabled"])
+            desktop.click(window, initial["enable"])
+            self.assertTrue(snapshot()["enabled"])
+            desktop.click(window, initial["bound"])
+            self.assertEqual(snapshot()["changes"], 4)
+            desktop.key(window, "Tab")
+            desktop.key(window, "Space")
+            self.assertFalse(snapshot()["owned_checked"])
+            desktop.key(window, "Tab")
+            desktop.key(window, "Space")  # Checkbox callback removes its own ancestor.
+            removed = snapshot()
+            self.assertFalse(removed["alive"] or removed["pending"])
+            desktop.click(window, removed["mutate"])
+            self.assertEqual(snapshot()["count"], 3)
+
     def test_nested_input_resize_clipping_and_subtree_removal(self):
         with tempfile.TemporaryDirectory() as directory:
             suffix = ".exe" if sys.platform == "win32" else ""
@@ -310,36 +407,12 @@ class NativeWindowTests(unittest.TestCase):
                 desktop.close()
 
     def test_reactive_widgets_draw_and_receive_input(self):
-        with tempfile.TemporaryDirectory() as directory:
-            suffix = ".exe" if sys.platform == "win32" else ""
-            binary = Path(directory) / ("reactive_window_test" + suffix)
-            subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/reactive_window.c3"),
-                            "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(binary),
-                            "--obj-out", directory], check=True)
-            desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
-            try:
-                with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
-                    try:
-                        deadline = time.monotonic() + 5
-                        window = None
-                        while time.monotonic() < deadline:
-                            if process.poll() is not None:
-                                self.fail(f"window exited early: {process.communicate()}")
-                            window = desktop.find("ui reactive test")
-                            if window:
-                                break
-                            time.sleep(0.02)
-                        self.assertTrue(window, "reactive window did not appear")
-                        desktop.click_and_activate(window)
-                        desktop.close_window(window)
-                        stdout, stderr = process.communicate(timeout=5)
-                        self.assertEqual(process.returncode, 0, stdout + stderr)
-                    finally:
-                        if process.poll() is None:
-                            process.kill()
-                            process.communicate()
-            finally:
-                desktop.close()
+        with self.fixture("reactive_window", "ui reactive test") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Space")
+            geometry = snapshot()
+            desktop.click(window, geometry)
+            self.assertEqual(snapshot(), geometry)
 
     def test_title_client_size_close_and_reopen(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -112,6 +112,7 @@ fn void View.update(&self)
 		int y = content.y;
 		for (Widget* widget = self.first; widget; widget = widget.next)
 		{
+			if (widget.hidden) { collapse_geometry(widget); continue; }
 			Rect bounds = self.layout_dirty ? (Rect) { content.x, y,
 				math::min(widget.desired.width, content.width), widget.desired.height } : widget.bounds;
 			widget.place(bounds, content);

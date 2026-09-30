@@ -16,11 +16,16 @@ struct Dependency @private
 }
 
 alias TextBinding = fn String(void* context);
+alias BoolBinding = fn bool(void* context);
+
+enum Property @private { LABEL, ENABLED, VISIBLE, CHECKED }
 
 struct Binding @private
 {
 	Widget* widget;
+	Property property;
 	TextBinding evaluate;
+	BoolBinding evaluate_bool;
 	void* context;
 	Dependency* dependencies;
 	Binding* pending_next;
@@ -80,14 +85,34 @@ fn void Binding.run(&self) => @pool()
 	self.unsubscribe();
 	active_binding = self;
 	defer active_binding = null;
-	// Copy the result while the callback's temporary strings are still alive.
-	self.widget.assign_text(self.evaluate(self.context));
+	// Apply internally while the purity guard is still active. Public setters
+	// would detach the binding and must remain forbidden inside callbacks.
+	switch (self.property)
+	{
+		case LABEL: // Copy before the callback's temporary strings expire.
+			assign_text(self.widget, self.evaluate(self.context));
+		case ENABLED: assign_enabled(self.widget, self.evaluate_bool(self.context));
+		case VISIBLE: assign_visible(self.widget, self.evaluate_bool(self.context));
+		case CHECKED: assign_checked(self.widget, self.evaluate_bool(self.context));
+	}
 }
 
-fn void Widget.unbind(&self)
+fn Binding** binding_slot(Widget* self, Property property) @private
+{
+	switch (property)
+	{
+		case LABEL: return &self.binding;
+		case ENABLED: return &self.enabled_binding;
+		case VISIBLE: return &self.visible_binding;
+		case CHECKED: return &self.checked_binding;
+	}
+}
+
+fn void unbind_property(Widget* self, Property property) @private
 {
 	assert(!active_binding, "Bindings cannot mutate the widget tree");
-	Binding* binding = self.binding;
+	Binding** slot = binding_slot(self, property);
+	Binding* binding = *slot;
 	if (!binding) return;
 	View* view = self.owner;
 	Binding* previous;
@@ -102,18 +127,52 @@ fn void Widget.unbind(&self)
 		}
 		previous = item;
 	}
-	self.binding = null;
+	*slot = null;
 	binding.unsubscribe();
 	mem::free(binding);
 }
 
-// Bind either a Text's content or a Button's label. Reads of State.get() inside
+// Unbind only this property, retaining its last value. Subtree disposal uses
+// dispose_bindings(), not the public, text-only unbind() compatibility API.
+fn void Widget.unbind(&self) => unbind_property(self, LABEL);
+fn void Widget.unbind_enabled(&self) => unbind_property(self, ENABLED);
+fn void Widget.unbind_visible(&self) => unbind_property(self, VISIBLE);
+fn void Widget.unbind_checked(&self) => unbind_property(self, CHECKED);
+
+fn void dispose_bindings(Widget* self) @private
+{
+	self.unbind();
+	self.unbind_enabled();
+	self.unbind_visible();
+	self.unbind_checked();
+}
+
+// Bind Text content, a Button label, or a Checkbox label. Reads of State.get() inside
 // evaluate subscribe automatically, including reads in helper functions.
 fn void Widget.bind(&self, TextBinding evaluate, void* context = null)
 {
-	assert(!self.is_container(), "Only Text and Button widgets have labels");
+	assert(!self.is_container(), "Only leaf widgets have labels");
 	assert(evaluate != null);
 	self.unbind();
 	self.binding = mem::new(Binding, { .widget = self, .evaluate = evaluate, .context = context });
 	self.binding.run();
 }
+
+fn void bind_bool(Widget* self, Property property, BoolBinding evaluate, void* context) @private
+{
+	assert(evaluate != null);
+	assert(property != CHECKED || self.kind == CHECKBOX, "Only Checkboxes have checked state");
+	unbind_property(self, property);
+	Binding* binding = mem::new(Binding, {
+		.widget = self, .property = property, .evaluate_bool = evaluate, .context = context,
+	});
+	*binding_slot(self, property) = binding;
+	binding.run();
+}
+
+fn void Widget.bind_enabled(&self, BoolBinding evaluate, void* context = null) =>
+	bind_bool(self, ENABLED, evaluate, context);
+fn void Widget.bind_visible(&self, BoolBinding evaluate, void* context = null) =>
+	bind_bool(self, VISIBLE, evaluate, context);
+fn void Widget.bind_checked(&self, BoolBinding evaluate, void* context = null) =>
+	bind_bool(self, CHECKED, evaluate, context);

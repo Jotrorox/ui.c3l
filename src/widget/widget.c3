@@ -1,7 +1,8 @@
 module ui;
 
-enum WidgetKind { TEXT, BUTTON, ROW, COLUMN }
+enum WidgetKind { TEXT, BUTTON, ROW, COLUMN, CHECKBOX }
 alias ClickHandler = fn void(void* context);
+alias CheckHandler = fn void(void* context, bool checked);
 
 // Handles stay at the same address until remove() or View.free(). All storage,
 // including copied labels and dependency edges, is owned by the View. Tree,
@@ -22,9 +23,16 @@ struct Widget
 	Size desired;
 	Size text_size;
 	Binding* binding;
+	Binding* enabled_binding;
+	Binding* visible_binding;
+	Binding* checked_binding;
 	ClickHandler on_click;
 	void* click_context;
+	CheckHandler on_change;
+	void* change_context;
 	bool disabled;
+	bool hidden; // local collapse flag; visible above is clipped geometry
+	bool checked;
 	bool measure_dirty;
 	bool text_dirty;
 	bool layout_dirty;
@@ -117,7 +125,7 @@ fn Widget* add_widget(View* self, WidgetKind kind, String text, Widget* parent =
 	attach_widget(widget, parent);
 	if (!widget.is_container())
 	{
-		widget.assign_text(text);
+		assign_text(widget, text);
 		widget.request_measure();
 	}
 	else { widget.request_size(); }
@@ -143,6 +151,23 @@ fn Widget* Widget.button(&self, String label, ClickHandler on_click, void* conte
 	return widget;
 }
 
+fn Widget* add_checkbox(View* self, String label, bool checked, CheckHandler on_change,
+	void* context, Widget* parent = null) @private
+{
+	Widget* widget = add_widget(self, CHECKBOX, label, parent);
+	widget.checked = checked;
+	widget.on_change = on_change;
+	widget.change_context = context;
+	return widget;
+}
+
+fn Widget* View.checkbox(&self, String label = "", bool checked = false,
+	CheckHandler on_change = null, void* context = null) =>
+	add_checkbox(self, label, checked, on_change, context);
+fn Widget* Widget.checkbox(&self, String label = "", bool checked = false,
+	CheckHandler on_change = null, void* context = null) =>
+	add_checkbox(self.owner, label, checked, on_change, context, self);
+
 fn Widget* add_container(View* self, WidgetKind kind, Layout layout, Widget* parent = null) @private
 {
 	assert(layout.valid(), "Invalid container layout");
@@ -157,9 +182,9 @@ fn Widget* View.column(&self, Layout layout = {}) => add_container(self, COLUMN,
 fn Widget* Widget.row(&self, Layout layout = {}) => add_container(self.owner, ROW, layout, self);
 fn Widget* Widget.column(&self, Layout layout = {}) => add_container(self.owner, COLUMN, layout, self);
 
-fn void Widget.assign_text(&self, String text)
+fn void assign_text(Widget* self, String text) @private
 {
-	assert(!self.is_container(), "Only Text and Button widgets have labels");
+	assert(!self.is_container(), "Only leaf widgets have labels");
 	if (self.content == text) return;
 	assert(text.len <= 4096, "Widget labels are limited to 4096 UTF-8 bytes");
 	@pool()
@@ -178,7 +203,7 @@ fn void Widget.assign_text(&self, String text)
 fn void Widget.set_text(&self, String text)
 {
 	self.unbind();
-	self.assign_text(text);
+	assign_text(self, text);
 }
 
 fn String Widget.get_text(&self) => self.content;
@@ -190,16 +215,89 @@ fn bool Widget.is_enabled(&self)
 }
 
 fn bool Widget.interactive(&self) =>
-	self.kind == BUTTON && self.is_enabled() && !self.visible.empty();
+	(self.kind == BUTTON || self.kind == CHECKBOX) && self.is_enabled() &&
+	self.is_visible() && !self.visible.empty();
 
 fn void Widget.set_enabled(&self, bool enabled)
 {
-	assert(!active_binding, "Bindings cannot mutate widgets");
+	self.unbind_enabled();
+	assign_enabled(self, enabled);
+}
+
+fn void assign_enabled(Widget* self, bool enabled) @private
+{
 	if (self.disabled == !enabled) return;
 	self.disabled = !enabled;
 	// Containers have no ink; their visible bounds cover all descendant ink.
 	self.owner.invalidate(self.visible);
 	self.owner.reconcile_input();
+}
+
+// Logical visibility is inherited. Clipping is reported separately by visible.
+fn bool Widget.is_visible(&self)
+{
+	for (Widget* node = self; node; node = node.parent) if (node.hidden) return false;
+	return true;
+}
+
+fn void Widget.set_visible(&self, bool visible)
+{
+	self.unbind_visible();
+	assign_visible(self, visible);
+}
+
+fn void assign_visible(Widget* self, bool visible) @private
+{
+	if (self.hidden == !visible) return;
+	self.hidden = !visible;
+	// Keep desired sizes, text metrics, and dirty work for restoration. Clear
+	// clipped geometry immediately so hidden descendants cannot paint or hit.
+	if (!visible) collapse_geometry(self);
+	if (self.parent) { self.parent.children_changed(); }
+	else { self.owner.layout_dirty = true; self.owner.measure_dirty = true; }
+	self.request_layout();
+	self.owner.reconcile_input();
+}
+
+fn void collapse_geometry(Widget* self) @private
+{
+	self.owner.invalidate(self.visible);
+	self.visible = {};
+	for (Widget* child = self.first; child; child = child.next) collapse_geometry(child);
+}
+
+fn bool Widget.is_checked(&self)
+{
+	assert(self.kind == CHECKBOX, "Only Checkboxes have checked state");
+	return self.checked;
+}
+
+fn void Widget.set_checked(&self, bool checked)
+{
+	assert(self.kind == CHECKBOX, "Only Checkboxes have checked state");
+	self.unbind_checked();
+	assign_checked(self, checked);
+}
+
+fn void assign_checked(Widget* self, bool checked) @private
+{
+	if (self.checked == checked) return;
+	self.checked = checked;
+	self.owner.invalidate(self.visible);
+}
+
+fn void activate_widget(Widget* self) @private
+{
+	if (self.kind == CHECKBOX)
+	{
+		bool next = !self.checked;
+		// A bound Checkbox proposes a value; the application may accept or reject
+		// it via State. An unbound Checkbox owns its value, even without a handler.
+		if (!self.checked_binding) assign_checked(self, next);
+		if (self.on_change) self.on_change(self.change_context, next);
+	}
+	else if (self.on_click) { self.on_click(self.click_context); }
+	// Never access self after a callback: it may have removed this subtree.
 }
 
 // Removes the whole subtree, including queued bindings, before freeing any
@@ -208,7 +306,7 @@ fn void Widget.remove(&self)
 {
 	assert(!active_binding, "Bindings cannot mutate the widget tree");
 	while (self.first) self.first.remove();
-	self.unbind();
+	dispose_bindings(self);
 	View* view = self.owner;
 	if (view.focused == self) view.focused = null;
 	if (view.hovered == self) view.hovered = null;
@@ -272,9 +370,9 @@ fn void View.pointer_up(&self, int x, int y)
 	Widget* pressed = self.pressed;
 	self.cancel_press();
 	// Clear capture first: callbacks may remove the widget or its ancestors.
-	if (pressed && pressed == self.hovered && pressed.interactive() && pressed.on_click)
+	if (pressed && pressed == self.hovered && pressed.interactive())
 	{
-		pressed.on_click(pressed.click_context);
+		activate_widget(pressed);
 	}
 }
 
@@ -311,7 +409,8 @@ fn void View.activate_focused(&self)
 {
 	self.update();
 	Widget* widget = self.focused;
-	if (widget && widget.interactive() && widget.on_click) widget.on_click(widget.click_context);
+	// Both Space and Enter activate Buttons and toggle Checkboxes.
+	if (widget && widget.interactive()) activate_widget(widget);
 }
 
 fn void View.blur(&self)
