@@ -30,12 +30,12 @@
     "windows-aarch64" : {
       "link-args" : [],
       "dependencies" : [],
-      "linked-libraries" : ["user32", "kernel32"]
+      "linked-libraries" : ["user32", "kernel32", "gdi32"]
     },
     "windows-x64" : {
       "link-args" : [],
       "dependencies" : [],
-      "linked-libraries" : ["user32", "kernel32"]
+      "linked-libraries" : ["user32", "kernel32", "gdi32"]
     }
   },
   "sources" : ["src/**"],

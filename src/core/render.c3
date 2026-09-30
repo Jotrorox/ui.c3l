@@ -1,0 +1,64 @@
+module ui;
+
+// Semantic colors allow backends to select pixels without assuming an X11
+// visual's channel masks. The initial palette is intentionally monochrome.
+enum Ink { PAPER, INK }
+alias FillRect = fn void?(void* context, Rect rect, Ink ink);
+alias DrawText = fn void?(void* context, String text, int x, int y, Ink ink);
+alias SetClip = fn void?(void* context, Rect rect);
+
+struct Renderer
+{
+	void* context;
+	FillRect fill;
+	DrawText text;
+	SetClip clip;
+}
+
+fn void? Renderer.border(&self, Rect rect, Ink ink)
+{
+	if (rect.empty()) return;
+	self.fill(self.context, { rect.x, rect.y, rect.width, 1 }, ink)!;
+	self.fill(self.context, { rect.x, rect.y + rect.height - 1, rect.width, 1 }, ink)!;
+	self.fill(self.context, { rect.x, rect.y, 1, rect.height }, ink)!;
+	self.fill(self.context, { rect.x + rect.width - 1, rect.y, 1, rect.height }, ink)!;
+}
+
+// Backends clip drawing to this damage rectangle. Unchanged measurements and
+// widget identities survive both paint and layout passes.
+fn void? View.paint(&self, Renderer* renderer, Rect clip)
+{
+	if (clip.empty()) return;
+	renderer.clip(renderer.context, clip)!;
+	renderer.fill(renderer.context, clip, PAPER)!;
+	for (Widget* widget = self.first; widget; widget = widget.next)
+	{
+		if (widget.bounds.intersect(clip).empty()) continue;
+		renderer.clip(renderer.context, widget.bounds.intersect(clip))!;
+		Rect rect = widget.bounds;
+		Ink foreground = INK;
+		int x = rect.x;
+		int y = rect.y;
+		if (widget.kind == BUTTON)
+		{
+			bool down = self.pressed == widget && self.hovered == widget;
+			if (down)
+			{
+				renderer.fill(renderer.context, rect, INK)!;
+				foreground = PAPER;
+			}
+			renderer.border(rect, INK)!;
+			if (self.focused == widget || self.hovered == widget)
+			{
+				renderer.border({ rect.x + 3, rect.y + 3, rect.width - 6, rect.height - 6 }, foreground)!;
+			}
+			x += 12;
+			y += 8;
+		}
+		renderer.text(renderer.context, widget.content, x, y, foreground)!;
+		if (widget.disabled)
+		{
+			renderer.fill(renderer.context, { x, y + widget.text_size.height / 2, widget.text_size.width, 1 }, foreground)!;
+		}
+	}
+}

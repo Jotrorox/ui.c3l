@@ -1,4 +1,4 @@
-"""Exercise the actual example against a small X11 server; no display is needed."""
+"""Exercise blank windows and the counter example against a simulated X server."""
 import os
 from pathlib import Path
 import socket
@@ -12,6 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/window"
 BINARY = EXAMPLE / "build/window"
+BLANK_BINARY = ROOT / "build/blank_window"
 
 
 def read_exact(connection, count):
@@ -33,6 +34,7 @@ def setup_reply():
     struct.pack_into("<III", body, 4, 0x200000, 0x1FFFFF, 0)
     struct.pack_into("<H", body, 18, 65535)
     body[20] = 1  # one screen
+    body[26:28] = bytes([8, 255])  # valid keyboard keycode range
     struct.pack_into("<IIII", body, 32, 0x100, 0, 0xFFFFFF, 0)
     body[70] = 24
     return struct.pack("<BBHHH", 1, 0, 11, 0, len(body) // 4) + body
@@ -43,8 +45,11 @@ class X11IntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         subprocess.run(["c3c", "build", "--path", str(EXAMPLE)], check=True)
+        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/blank_window.c3"),
+                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(BLANK_BINARY),
+                        "--obj-out", str(ROOT / "build")], check=True)
 
-    def run_server(self, mode="close", authenticated=False):
+    def run_server(self, mode="close", authenticated=False, widgets=False):
         errors = []
         with tempfile.TemporaryDirectory() as temp, socket.socket(socket.AF_UNIX) as server:
             # Reserve a unique Linux abstract X socket without touching /tmp.
@@ -124,7 +129,29 @@ class X11IntegrationTests(unittest.TestCase):
                                 self.assertEqual((window, parent), (0x200001, 0x100))
                                 self.assertEqual(struct.unpack_from("<HH", request, 16), (800, 600))
                                 self.assertEqual(struct.unpack_from("<III", request, 28),
-                                                 (0x802, 0xFFFFFF, 1 << 17))
+                                                 (0x802, 0xFFFFFF, 0x22807F if widgets else 1 << 17))
+                            elif opcode == 45 and widgets:  # OpenFont
+                                self.assertEqual(struct.unpack_from("<I", request, 4)[0], 0x200002)
+                                self.assertEqual(request[12:17], b"fixed")
+                            elif opcode == 47 and widgets:  # QueryFont
+                                reply = bytearray(60)
+                                reply[0] = 1
+                                struct.pack_into("<HI", reply, 2, sequence, 7)
+                                for offset in (8, 24):
+                                    struct.pack_into("<hhhhhH", reply, offset, 0, 6, 6, 10, 3, 0)
+                                struct.pack_into("<HHH", reply, 40, 32, 126, 63)
+                                struct.pack_into("<hh", reply, 52, 10, 3)
+                                connection.sendall(reply)
+                            elif opcode == 101 and widgets:  # GetKeyboardMapping
+                                self.assertEqual(request[4:6], bytes([8, 248]))
+                                reply = bytearray(32 + 248 * 4)
+                                reply[0:2] = bytes([1, 1])
+                                struct.pack_into("<HI", reply, 2, sequence, 248)
+                                for key, symbol in ((23, 0xFF09), (36, 0xFF0D), (65, 0x20)):
+                                    struct.pack_into("<I", reply, 32 + (key - 8) * 4, symbol)
+                                connection.sendall(reply)
+                            elif opcode == 55 and widgets:  # CreateGC
+                                self.assertEqual(struct.unpack_from("<II", request, 4), (0x200003, 0x100))
                             elif opcode == 18:
                                 target, prop, kind = struct.unpack_from("<III", request, 4)
                                 self.assertEqual(target, window)
@@ -138,6 +165,46 @@ class X11IntegrationTests(unittest.TestCase):
                                 break
                             else:
                                 self.fail(f"unexpected X11 opcode {opcode}")
+                        if widgets:
+                            stage = 0
+                            labels = []
+                            fills = []
+
+                            def input_event(kind, detail, x=20, y=45):
+                                event = bytearray(32)
+                                event[0:2] = bytes([kind | 0x80, detail])
+                                struct.pack_into("<I", event, 12, window)
+                                struct.pack_into("<hh", event, 24, x, y)
+                                connection.sendall(event)
+
+                            while stage < 3:
+                                header = read_exact(connection, 4)
+                                opcode, _, words = struct.unpack("<BBH", header)
+                                request = header + read_exact(connection, words * 4 - 4)
+                                self.assertIn(opcode, (56, 59, 70, 75))
+                                if opcode == 70:
+                                    fills.append(struct.unpack_from("<hhHH", request, 12))
+                                if opcode != 75:
+                                    continue
+                                self.assertEqual(struct.unpack_from("<II", request, 4), (window, 0x200003))
+                                label = request[18:18 + request[16] * 2].decode("utf-16-be")
+                                labels.append(label)
+                                if stage == 0 and label == "Increment":
+                                    self.assertIn("Count: 5", labels)
+                                    self.assertIn((0, 0, 800, 600), fills)
+                                    labels.clear()
+                                    fills.clear()
+                                    input_event(4, 1)
+                                    input_event(5, 1)
+                                    stage = 1
+                                elif stage == 1 and "Count: 6" in labels and label == "Increment":
+                                    # The click repaints damaged widgets, not the whole window.
+                                    self.assertNotIn((0, 0, 800, 600), fills)
+                                    labels.clear()
+                                    input_event(2, 36)  # Return activates the focused button.
+                                    stage = 2
+                                elif stage == 2 and label == "Count: 7":
+                                    stage = 3
                         if mode == "protocol_error":
                             connection.sendall(bytes(32))
                         elif mode == "event_disconnect":
@@ -161,14 +228,19 @@ class X11IntegrationTests(unittest.TestCase):
                             struct.pack_into("<I", event, 4, window)
                             for byte in event:
                                 connection.sendall(bytes([byte]))
-                        self.assertEqual(connection.recv(1), b"", "client must release the connection")
+                        if widgets:
+                            while connection.recv(4096):
+                                pass  # Finish any already queued drawing requests before close.
+                        else:
+                            self.assertEqual(connection.recv(1), b"", "client must release the connection")
                 except BaseException as error:
                     errors.append(error)
 
             thread = threading.Thread(target=serve, daemon=True)
             thread.start()
             environment = {**os.environ, "DISPLAY": f":{number}.0", "XAUTHORITY": str(authority)}
-            result = subprocess.run([str(BINARY)], env=environment, capture_output=True, text=True, timeout=8)
+            result = subprocess.run([str(BINARY if widgets else BLANK_BINARY)], env=environment,
+                                    capture_output=True, text=True, timeout=8)
             thread.join(6)
             self.assertFalse(thread.is_alive(), "test server did not finish")
             if errors:
@@ -181,6 +253,10 @@ class X11IntegrationTests(unittest.TestCase):
 
     def test_local_authority_cookie(self):
         result = self.run_server(authenticated=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_counter_draws_and_reacts_to_mouse_and_keyboard(self):
+        result = self.run_server(widgets=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_destroy_notification(self):

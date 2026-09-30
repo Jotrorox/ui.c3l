@@ -27,6 +27,11 @@ struct Setup
 	uint window;
 	uint root;
 	uint white_pixel;
+	uint black_pixel;
+	uint resource_base;
+	uint resource_mask;
+	char min_keycode;
+	char max_keycode;
 }
 
 fn ushort read16(char[] data, sz offset) @private => (ushort)((uint)data[offset] | (uint)data[offset + 1] << 8);
@@ -151,7 +156,8 @@ fn Setup? parse_setup(char[] data, uint screen) @private
 		if (offset > data.len || data.len - offset < 40) return ui::PROTOCOL_ERROR~;
 		if (index == screen)
 		{
-			return { base | (mask & (~mask + 1)), read32(data, offset), read32(data, offset + 8) };
+			return { base | (mask & (~mask + 1)), read32(data, offset), read32(data, offset + 8),
+				read32(data, offset + 12), base, mask, data[26], data[27] };
 		}
 		uint depths = data[offset + 39];
 		offset += 40;
@@ -246,7 +252,7 @@ fn bool is_close_event(char[] message, uint window, uint protocols, uint delete_
 		read32(message, 8) == protocols && read32(message, 12) == delete_window;
 }
 
-fn void? open(WindowOptions options) => @pool()
+fn void? open(WindowOptions options, View* view = null) => @pool()
 {
 	String value = (env::tget_var("DISPLAY") ?? ui::DISPLAY_UNAVAILABLE~)!;
 	if (!value.len) return ui::DISPLAY_UNAVAILABLE~;
@@ -269,6 +275,8 @@ fn void? open(WindowOptions options) => @pool()
 	uint delete_window = intern_atom(fd, "WM_DELETE_WINDOW")!;
 	uint net_name = intern_atom(fd, "_NET_WM_NAME")!;
 	uint utf8 = intern_atom(fd, "UTF8_STRING")!;
+	XCanvas canvas = { .fd = fd, .setup = setup };
+	if (view) canvas.init()!;
 	char[40] create;
 	create[0] = 1; // CreateWindow; depth and visual inherit from the root.
 	write16(create[..], 2, 10);
@@ -279,7 +287,8 @@ fn void? open(WindowOptions options) => @pool()
 	write16(create[..], 22, 1); // InputOutput
 	write32(create[..], 28, 2 | 0x800); // background-pixel, event-mask
 	write32(create[..], 32, setup.white_pixel);
-	write32(create[..], 36, 1 << 17); // StructureNotify
+	// Structure, exposure, mouse, keyboard and focus events for retained views.
+	write32(create[..], 36, view ? 0x22807f : 1 << 17);
 	send_all(fd, create[..])!;
 	char[4] atom;
 	write32(atom[..], 0, delete_window);
@@ -291,9 +300,22 @@ fn void? open(WindowOptions options) => @pool()
 	write16(map[..], 2, 2);
 	write32(map[..], 4, setup.window);
 	send_all(fd, map[..])!;
+	if (view)
+	{
+		view.set_measurer(&measure_xtext, &canvas);
+		view.update();
+		view.invalidate({ 0, 0, view.width, view.height });
+		canvas.paint(view)!;
+	}
 	while (true)
 	{
 		char[32] message = receive_message(fd)!;
 		if (is_close_event(message[..], setup.window, protocols, delete_window)) return;
+		if (view)
+		{
+			canvas.event(view, message[..])!;
+			view.update();
+			canvas.paint(view)!;
+		}
 	}
 }
