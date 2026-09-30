@@ -185,31 +185,112 @@ widgets. Damage remains one union rectangle and painting scans the tree.
 The backends retain their existing text limitations: core X11 `fixed` font with
 missing-glyph substitution on Linux, GDI on Windows, single-line UTF-8 labels
 up to 4096 bytes, and no general shaping, font fallback, or accessibility API.
-X11 currently activates on each relevant KeyPress and only loads the keyboard
-mapping at startup; MappingNotify refresh and repeat/key-release handling remain
-follow-ups. Windows suppresses repeated activation keydowns.
+## Keyboard behavior
+
+Space and Enter activate a focused Button or toggle a focused Checkbox on the
+**initial eligible press**. Holding either key produces no further activations;
+a release followed by a new press allows another activation. Each physical key
+has its own lifetime. A key pressed without an eligible target is still tracked.
+Changing widget focus, hiding/disabling/clipping a control, or removing it does
+not let the held key activate a replacement control. Callback self-removal and
+bound Checkbox proposals follow the ownership rules above.
+
+Tab and Shift+Tab traverse eligible controls in depth-first order and wrap.
+**Tab repeats intentionally**, including while an activation key remains held.
+`view.activate_focused()` is an explicit programmatic action: each call can
+activate, independently of native key state. Native adapters use `key_down()` /
+`key_up()`; these methods take a native key identity and the small `ControlKey`
+action enum, rather than exposing a text-input API.
+
+Blur clears widget input references and keyboard bookkeeping. Refocus reconciles
+held activation keys using Win32 key state or X11 KeymapNotify. Opening/reopening
+a native window resets the input lifetime; widgets and application State remain.
+Windows honors WM_KEYDOWN's previous-state bit and consumes releases. X11 handles
+both repeated presses and core autorepeat release/press pairs by matching the
+keycode and server timestamp, without socket-peek timing assumptions. Core X11
+cannot distinguish an actual release/repress of the same key within the same
+server millisecond from such a repeat pair; that pair is conservatively suppressed.
+
+X11 refreshes the full server keyboard mapping on MappingKeyboard and
+MappingModifier notifications, retaining physical held-key identities. It ignores
+MappingPointer. Refresh validates ranges, reply sequence, stride, and length,
+replaces storage only after a complete reply, and frees previous storage. Input,
+focus, exposure, and close events arriving during refresh are queued in order and
+processed with the new map; extension payloads are consumed. Errors, unexpected
+replies, truncated traffic, or more than 4096 queued events fail the window open
+operation and release its resources. Normal disconnects still report
+`CONNECTION_FAILED`.
+
+Only the supported control keysyms in the first mapping column and the core Shift
+mask are interpreted. Full keyboard groups, text input, IME, and accessibility
+remain future work. No X11 client library or toolkit is required at runtime.
 
 ## Validation
 
-Run from the repository root:
+Run from a checkout directory named **ui.c3l**. Both project files resolve the
+library through `..`. Install C3 **0.8.4** and Python **3.12+** on PATH. For a fresh
+compiler installation on Linux or Windows x64:
+
+```sh
+python3 scripts/install-c3.py --dest /path/to/new/c3
+```
+
+Use `python` on Windows. Add the destination directory to PATH. The installer
+uses the [official v0.8.4 release](https://github.com/c3lang/c3c/releases/tag/v0.8.4),
+pins the Linux static/Windows archive SHA-256 digests published in its release
+metadata, rejects a mismatched download, and verifies the executable's version.
+It requires a new destination and never overwrites an existing installation.
 
 ```sh
 c3c test
+c3c test -O3 --build-dir /tmp/ui-c3-release-test --output-dir /tmp/ui-c3-release-test
 c3c build --path examples/window
 python3 -m unittest discover -s tests -v
-UI_NATIVE_TESTS=1 python3 -m unittest discover -s tests -v
-c3c test -O3 --build-dir /tmp/ui-c3-release-test --output-dir /tmp/ui-c3-release-test
 ```
 
-The `UI_NATIVE_TESTS=1` command opens desktop test windows. Its fixtures report
-native geometry so the driver can test mouse input, keyboard focus, resize,
-clipping, checkbox properties, and removal without assuming font measurements
-or X11 keycodes. The display must allow test windows to resize; an isolated Xvfb
-display is useful when a desktop window manager overrides resize requests.
-The test driver uses OS libraries through Python's `ctypes`; the library's
-runtime dependency footprint is unchanged.
+C3 tests cover bindings, independent property cleanup, layout, shared keyboard
+lifecycle, callback removal, X11 event translation, and (when built on Windows)
+Win32 repeat metadata. The default Python suite runs simulated X11 tests on
+Linux and skips desktop tests. Simulation includes complete key cycles, explicit
+repeat pairs, mapping changes with changed strides, fragmented/interleaved
+traffic, malformed replies, and disconnect cleanup.
 
-Linux can also check Windows compilation (this does not run Windows code):
+Desktop tests remain opt-in. On Linux install `xvfb`, the core fixed font (usually
+`xfonts-base`), and `libX11.so.6` **for the Python test driver only**, then run:
+
+```sh
+python3 scripts/test-xvfb.py
+```
+
+This starts its own Xvfb using `-displayfd`, supplies a fresh DISPLAY, enables the
+native suite, reports startup/test failures, and stops the server even on failure.
+The mapping test swaps/restores Return and Space on that isolated server.
+`UI_TEST_ISOLATED_X11` is reserved for this runner; do not set it for a desktop.
+No script depends on a temporary Xvfb installation path.
+
+For an existing desktop (without keyboard-map edits):
+
+```sh
+UI_NATIVE_TESTS=1 python3 -m unittest discover -s tests -v
+```
+
+On Windows PowerShell, set `$env:UI_NATIVE_TESTS = '1'` then run
+`python -m unittest discover -s tests -v`. Alternatively,
+`python scripts/test-windows.py` checks for an accessible input desktop and
+explicitly reports a skip if unavailable; test failures otherwise fail the run.
+A window manager must allow test-window resize, so isolated Xvfb is preferred on
+Linux. Fixtures report geometry for mouse targeting; X11 keycodes are queried
+from the server on every cycle. Drivers inject X11 events / Win32 messages with
+complete press/release cycles and explicit repeat metadata. These validate native
+backend dispatch and rendering, not physical keyboard hardware or IME behavior.
+
+[CI](../../.github/workflows/test.yml) configures Linux and Windows C3 tests,
+optimized tests, and example builds. Linux additionally runs simulation and the
+isolated native suite; Windows runs desktop tests when its input desktop is
+available. Each job checks out into `ui.c3l` and verifies the pinned compiler.
+A workflow definition is not evidence of a successful hosted CI run.
+
+Linux can also check Windows compilation (this does not execute Windows code):
 
 ```sh
 mkdir -p /tmp/ui-c3-win-check
@@ -219,8 +300,12 @@ c3c compile-only tests/fixtures/nested_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
 c3c compile-only tests/fixtures/checkbox_window.c3 --libdir .. --lib ui \
   --target windows-x64 --obj-out /tmp/ui-c3-win-check
+c3c compile-only tests/fixtures/keyboard_window.c3 --libdir .. --lib ui \
+  --target windows-x64 --obj-out /tmp/ui-c3-win-check
+c3c test --target windows-x64 -C --suppress-run
 ```
 
-Windows runtime behavior still needs native validation.
+The last command checks Windows test semantics without running or linking them.
+Native Windows execution must be reported separately from these checks.
 
 This example is covered by the repository's [BSD 2-Clause License](../../LICENSE).

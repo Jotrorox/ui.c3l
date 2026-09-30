@@ -88,6 +88,16 @@ fn void flush_window(WinWindow* window) @private
 	}
 }
 
+// Kept separate from painting so native message metadata can be tested without
+// an HWND. A repeated message can arrive without a prior down after refocus.
+fn void win_key(View* view, bool down, uint key, sz flags, bool shift) @private
+{
+	if (key >= 256) return;
+	if (!down) { view.key_up((char)key); return; }
+	view.key_down((char)key, key == 9 ? TAB : (key == 13 || key == 32 ? ACTIVATE : NONE),
+		(flags & (1 << 30)) != 0, shift);
+}
+
 fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wparam, Win32_LPARAM lparam) @private
 {
 	View* view = window.view;
@@ -136,9 +146,16 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 		case 8: // WM_KILLFOCUS
 			view.blur();
 			(void)release_capture();
-		case 0x100: // WM_KEYDOWN
-			if (wparam == 9) view.focus_next(get_key_state(16) < 0);
-			if ((wparam == 13 || wparam == 32) && !(lparam & (1 << 30))) view.activate_focused();
+		case 7: // WM_SETFOCUS: suppress keys already held when focus arrives.
+			view.held_keys[13] = get_key_state(13) < 0;
+			view.held_keys[32] = get_key_state(32) < 0;
+		case 0x100: // WM_KEYDOWN; bit 30 survives even a lost initial press.
+			win_key(view, true, (uint)wparam, lparam, get_key_state(16) < 0);
+		case 0x101: // WM_KEYUP
+			win_key(view, false, (uint)wparam, lparam, false);
+		case 0x105: // WM_SYSKEYUP: Alt pressed during a hold can change release type.
+			win_key(view, false, (uint)wparam, lparam, false);
+			return false; // Preserve DefWindowProc's system-key behavior.
 		default:
 			return false;
 	}

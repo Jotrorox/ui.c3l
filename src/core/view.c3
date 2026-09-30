@@ -42,6 +42,7 @@ struct View
 	int pointer_y;
 	bool pointer_known;
 	bool opened;
+	bool[256] held_keys; // Native key identities, independent of widget lifetimes.
 	MeasureText measure_text;
 	void* measure_context;
 }
@@ -136,6 +137,7 @@ fn void? View.open(&self, String title = "ui", int width = 800, int height = 600
 	WindowOptions options = { title, width, height };
 	validate_options(options)!;
 	assert(!self.opened, "A View can only have one native window");
+	self.blur(); // A reopened window starts a new native input lifetime.
 	self.opened = true;
 	defer self.opened = false;
 	defer self.blur();

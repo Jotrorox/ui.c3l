@@ -16,6 +16,19 @@ extern fn sz send(int fd, void* buffer, sz length, int flags);
 extern fn int close(int fd);
 extern fn int gethostname(char* buffer, sz length);
 
+struct XConnection
+{
+	int fd;
+	ushort sequence;
+}
+
+// Count requests, not send() fragments; replies carry the low 16 bits.
+fn void? XConnection.request(&self, char[] header)
+{
+	self.sequence = (ushort)((uint)self.sequence + 1);
+	return send_all(self.fd, header);
+}
+
 struct Display
 {
 	uint number;
@@ -194,6 +207,18 @@ fn Setup? handshake(int fd, Display display) @private
 	return parse_setup(data, display.screen);
 }
 
+fn void? discard_payload(int fd, uint words) @private
+{
+	ulong remaining = (ulong)words * 4;
+	char[4096] buffer;
+	while (remaining)
+	{
+		sz count = remaining > buffer.len ? buffer.len : (sz)remaining;
+		receive_all(fd, buffer[:count])!;
+		remaining -= (ulong)count;
+	}
+}
+
 // Consume complete messages, including variable-length extension events.
 fn char[32]? receive_message(int fd) @private
 {
@@ -203,32 +228,25 @@ fn char[32]? receive_message(int fd) @private
 	if (type == 0) return ui::PROTOCOL_ERROR~;
 	if (type == 1 || type == 35)
 	{
-		ulong remaining = (ulong)read32(message[..], 4) * 4;
-		char[4096] buffer;
-		while (remaining)
-		{
-			sz count = remaining > buffer.len ? buffer.len : (sz)remaining;
-			receive_all(fd, buffer[:count])!;
-			remaining -= (ulong)count;
-		}
+		discard_payload(fd, read32(message[..], 4))!;
 	}
 	return message;
 }
 
-fn uint? intern_atom(int fd, String name) @private
+fn uint? intern_atom(XConnection* connection, String name) @private
 {
 	char[64] request;
 	request[0] = 16;
 	write16(request[..], 2, (uint)(8 + padded(name.len)) / 4);
 	write16(request[..], 4, (uint)name.len);
 	request[8:name.len] = ((char[])name)[..];
-	send_all(fd, request[:8 + padded(name.len)])!;
-	char[32] reply = receive_message(fd)!;
+	connection.request(request[:8 + padded(name.len)])!;
+	char[32] reply = receive_message(connection.fd)!;
 	if (reply[0] != 1 || !read32(reply[..], 8)) return ui::PROTOCOL_ERROR~;
 	return read32(reply[..], 8);
 }
 
-fn void? change_property(int fd, uint window, uint property, uint type, char format, char[] data) @private
+fn void? change_property(XConnection* connection, uint window, uint property, uint type, char format, char[] data) @private
 {
 	char[24] header;
 	header[0] = 18;
@@ -238,10 +256,10 @@ fn void? change_property(int fd, uint window, uint property, uint type, char for
 	write32(header[..], 12, type);
 	header[16] = format;
 	write32(header[..], 20, (uint)data.len / ((uint)format / 8));
-	send_all(fd, header[..])!;
-	send_all(fd, data)!;
+	connection.request(header[..])!;
+	send_all(connection.fd, data)!;
 	char[3] padding;
-	send_all(fd, padding[:padded(data.len) - data.len])!;
+	send_all(connection.fd, padding[:padded(data.len) - data.len])!;
 }
 
 fn bool is_close_event(char[] message, uint window, uint protocols, uint delete_window) @private
@@ -271,11 +289,13 @@ fn void? open(WindowOptions options, View* view = null) => @pool()
 		if (connect(fd, &address, (uint)(3 + path.len)) != 0) return ui::DISPLAY_UNAVAILABLE~;
 	}
 	Setup setup = handshake(fd, display)!;
-	uint protocols = intern_atom(fd, "WM_PROTOCOLS")!;
-	uint delete_window = intern_atom(fd, "WM_DELETE_WINDOW")!;
-	uint net_name = intern_atom(fd, "_NET_WM_NAME")!;
-	uint utf8 = intern_atom(fd, "UTF8_STRING")!;
-	XCanvas canvas = { .fd = fd, .setup = setup };
+	XConnection connection = { .fd = fd };
+	uint protocols = intern_atom(&connection, "WM_PROTOCOLS")!;
+	uint delete_window = intern_atom(&connection, "WM_DELETE_WINDOW")!;
+	uint net_name = intern_atom(&connection, "_NET_WM_NAME")!;
+	uint utf8 = intern_atom(&connection, "UTF8_STRING")!;
+	XCanvas canvas = { .connection = &connection, .setup = setup };
+	defer canvas.dispose();
 	if (view) canvas.init()!;
 	char[40] create;
 	create[0] = 1; // CreateWindow; depth and visual inherit from the root.
@@ -288,18 +308,18 @@ fn void? open(WindowOptions options, View* view = null) => @pool()
 	write32(create[..], 28, 2 | 0x800); // background-pixel, event-mask
 	write32(create[..], 32, setup.white_pixel);
 	// Structure, exposure, mouse, keyboard and focus events for retained views.
-	write32(create[..], 36, view ? 0x22807f : 1 << 17);
-	send_all(fd, create[..])!;
+	write32(create[..], 36, view ? 0x22c07f : 1 << 17);
+	connection.request(create[..])!;
 	char[4] atom;
 	write32(atom[..], 0, delete_window);
-	change_property(fd, setup.window, protocols, 4, 32, atom[..])!; // ATOM
-	change_property(fd, setup.window, 39, 31, 8, (char[])options.title)!; // WM_NAME / STRING
-	change_property(fd, setup.window, net_name, utf8, 8, (char[])options.title)!;
+	change_property(&connection, setup.window, protocols, 4, 32, atom[..])!; // ATOM
+	change_property(&connection, setup.window, 39, 31, 8, (char[])options.title)!; // WM_NAME / STRING
+	change_property(&connection, setup.window, net_name, utf8, 8, (char[])options.title)!;
 	char[8] map;
 	map[0] = 8;
 	write16(map[..], 2, 2);
 	write32(map[..], 4, setup.window);
-	send_all(fd, map[..])!;
+	connection.request(map[..])!;
 	if (view)
 	{
 		view.set_measurer(&measure_xtext, &canvas);
@@ -309,7 +329,7 @@ fn void? open(WindowOptions options, View* view = null) => @pool()
 	}
 	while (true)
 	{
-		char[32] message = receive_message(fd)!;
+		char[32] message = view ? canvas.next_event()! : receive_message(fd)!;
 		if (is_close_event(message[..], setup.window, protocols, delete_window)) return;
 		if (view)
 		{

@@ -44,6 +44,7 @@ XErrorHandler = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_void_p)
 class X11Desktop:
     def __init__(self):
         self.api = c.CDLL("libX11.so.6")
+        self.event_time = 1000
         # Windows can disappear between tree enumeration and property reads.
         self.error_handler = XErrorHandler(lambda display, error: 0)
         self.api.XSetErrorHandler.argtypes = [XErrorHandler]
@@ -61,7 +62,11 @@ class X11Desktop:
             "XInternAtom": ([c.c_void_p, c.c_char_p, c.c_int], c.c_ulong),
             "XSendEvent": ([c.c_void_p, c.c_ulong, c.c_int, c.c_long, c.POINTER(XEvent)], c.c_int),
             "XFlush": ([c.c_void_p], c.c_int),
-            "XKeysymToKeycode": ([c.c_void_p, c.c_ulong], c.c_ubyte),
+            "XDisplayKeycodes": ([c.c_void_p, c.POINTER(c.c_int), c.POINTER(c.c_int)], c.c_int),
+            "XGetKeyboardMapping": ([c.c_void_p, c.c_ubyte, c.c_int, c.POINTER(c.c_int)], c.POINTER(c.c_ulong)),
+            "XChangeKeyboardMapping": ([c.c_void_p, c.c_int, c.c_int, c.POINTER(c.c_ulong), c.c_int], c.c_int),
+            "XSync": ([c.c_void_p, c.c_int], c.c_int),
+            "XSetInputFocus": ([c.c_void_p, c.c_ulong, c.c_int, c.c_ulong], c.c_int),
             "XResizeWindow": ([c.c_void_p, c.c_ulong, c.c_uint, c.c_uint], c.c_int),
             "XCloseDisplay": ([c.c_void_p], c.c_int),
         }
@@ -112,12 +117,14 @@ class X11Desktop:
             raise RuntimeError("XSendEvent failed")
         self.api.XFlush(self.display)
 
-    def input(self, window, kind, detail, x=0, y=0):
+    def input(self, window, kind, detail, x=0, y=0, timestamp=None, shift=False):
         event = XEvent()
         event.input = XInputEvent(type=kind, display=self.display, window=window,
                                   root=self.api.XDefaultRootWindow(self.display),
-                                  x=x, y=y, detail=detail, same_screen=1)
-        mask = {2: 1, 4: 1 << 2, 5: 1 << 3}[kind]
+                                  time=self.event_time if timestamp is None else timestamp,
+                                  state=int(shift), x=x, y=y, detail=detail, same_screen=1)
+        self.event_time += 10
+        mask = {2: 1, 3: 1 << 1, 4: 1 << 2, 5: 1 << 3}[kind]
         if not self.api.XSendEvent(self.display, window, 0, mask, c.byref(event)):
             raise RuntimeError("XSendEvent failed")
         self.api.XFlush(self.display)
@@ -127,12 +134,57 @@ class X11Desktop:
         self.input(window, 4, 1, x + width // 2, y + height // 2)
         self.input(window, 5, 1, x + width // 2, y + height // 2)
 
-    def key(self, window, name):
+    def key_event(self, window, name, down=True, repeat=False, shift=False):
         symbol = {"Tab": 0xFF09, "Return": 0xFF0D, "Space": 0x20}[name]
-        code = self.api.XKeysymToKeycode(self.display, symbol)
+        first, stride, symbols = self.keyboard_mapping()
+        code = next((first + index // stride for index, value in enumerate(symbols)
+                     if value == symbol and index % stride == 0), 0)
         if not code:
             raise RuntimeError(f"no key mapped for {name}")
-        self.input(window, 2, code)
+        if repeat:  # Core X11 autorepeat release/press share one server timestamp.
+            timestamp = self.event_time
+            self.input(window, 3, code, timestamp=timestamp)
+            self.input(window, 2, code, timestamp=timestamp, shift=shift)
+        else:
+            self.input(window, 2 if down else 3, code, shift=shift)
+
+    def key(self, window, name, shift=False):
+        self.key_event(window, name, shift=shift)
+        self.key_event(window, name, down=False, shift=shift)
+
+    def keyboard_mapping(self):
+        first, last, stride = c.c_int(), c.c_int(), c.c_int()
+        self.api.XDisplayKeycodes(self.display, c.byref(first), c.byref(last))
+        mapping = self.api.XGetKeyboardMapping(self.display, first.value,
+                                               last.value - first.value + 1, c.byref(stride))
+        if not mapping:
+            raise RuntimeError("XGetKeyboardMapping failed")
+        try:
+            return first.value, stride.value, list(mapping[:(last.value - first.value + 1) * stride.value])
+        finally:
+            self.api.XFree(mapping)
+
+    @contextmanager
+    def swapped_mapping(self):
+        if os.environ.get("UI_TEST_ISOLATED_X11") != "1":
+            raise RuntimeError("keyboard map edits require the isolated Xvfb runner")
+        first, stride, original = self.keyboard_mapping()
+
+        def apply(symbols):
+            self.api.XChangeKeyboardMapping(self.display, first, stride,
+                                            (c.c_ulong * len(symbols))(*symbols), len(symbols) // stride)
+            self.api.XSync(self.display, 0)
+
+        try:
+            apply([{0xFF0D: 0x20, 0x20: 0xFF0D}.get(value, value) for value in original])
+            yield
+        finally:
+            apply(original)
+
+    def refocus(self, window):
+        self.api.XSetInputFocus(self.display, self.api.XDefaultRootWindow(self.display), 1, 0)
+        self.api.XSetInputFocus(self.display, window, 1, 0)
+        self.api.XSync(self.display, 0)
 
     def resize(self, window, width, height):
         self.api.XResizeWindow(self.display, window, width, height)
@@ -175,10 +227,22 @@ class WindowsDesktop:
             if not self.api.PostMessageW(window, message, wparam, position):
                 raise c.WinError(c.get_last_error())
 
-    def key(self, window, name):
+    def key_event(self, window, name, down=True, repeat=False):
         key = {"Tab": 9, "Return": 13, "Space": 32}[name]
-        if not self.api.PostMessageW(window, 0x100, key, 0):
+        scan = {"Tab": 0x0F, "Return": 0x1C, "Space": 0x39}[name]
+        flags = 1 | (scan << 16) | ((1 << 30) if repeat or not down else 0) | ((1 << 31) if not down else 0)
+        if not self.api.PostMessageW(window, 0x100 if down else 0x101, key, flags):
             raise c.WinError(c.get_last_error())
+
+    def key(self, window, name):
+        self.key_event(window, name)
+        self.key_event(window, name, down=False)
+
+    def refocus(self, window):
+        # Exercise native focus messages without stealing the user's desktop.
+        for message in (8, 7):
+            if not self.api.PostMessageW(window, message, 0, 0):
+                raise c.WinError(c.get_last_error())
 
     def resize(self, window, width, height):
         rect = wintypes.RECT()
@@ -197,7 +261,7 @@ class WindowsDesktop:
 @unittest.skipUnless(os.environ.get("UI_NATIVE_TESTS") == "1", "set UI_NATIVE_TESTS=1 to open test windows")
 class NativeWindowTests(unittest.TestCase):
     @contextmanager
-    def fixture(self, name, title):
+    def fixture(self, name, title, reopen=False):
         with tempfile.TemporaryDirectory() as directory:
             suffix = ".exe" if sys.platform == "win32" else ""
             binary = Path(directory) / (name + suffix)
@@ -207,6 +271,7 @@ class NativeWindowTests(unittest.TestCase):
             desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
             try:
                 with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      env={**os.environ, "UI_TEST_REOPEN": "1" if reopen else "0"},
                                       text=True) as process:
                     lines = queue.Queue()
 
@@ -233,6 +298,9 @@ class NativeWindowTests(unittest.TestCase):
                             time.sleep(0.02)
                         self.assertTrue(window, f"{name} window did not appear")
                         yield desktop, window, snapshot
+                        if reopen:
+                            window = desktop.find("ui keyboard test 1")
+                            self.assertTrue(window, "reopened keyboard window missing")
                         desktop.close_window(window)
                         self.assertEqual(process.wait(timeout=5), 0, process.stderr.read())
                     finally:
@@ -242,6 +310,80 @@ class NativeWindowTests(unittest.TestCase):
                         reader.join(timeout=5)
             finally:
                 desktop.close()
+
+    def test_keyboard_repeats_focus_and_reopen(self):
+        with self.fixture("keyboard_window", "ui keyboard test 0", reopen=True) as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            desktop.key(window, "Tab")
+            desktop.key_event(window, "Return")
+            desktop.key_event(window, "Return", repeat=True)
+            desktop.key_event(window, "Return", repeat=True)
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["clicks"], 1)
+            desktop.key(window, "Tab")  # Focus Button while Return remains held.
+            desktop.key_event(window, "Return", repeat=True)
+            desktop.key_event(window, "Return", down=False)
+            desktop.key_event(window, "Return")
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["clicks"], 2)
+            desktop.key(window, "Tab")
+            desktop.key(window, "Tab")
+            desktop.key_event(window, "Space")
+            desktop.key_event(window, "Space", repeat=True)
+            desktop.key_event(window, "Space", down=False)
+            desktop.key_event(window, "Space")
+            desktop.click(window, initial["inspect"])
+            state = snapshot()
+            self.assertEqual((state["changes"], state["checked"]), (2, False))
+            desktop.refocus(window)
+            desktop.key(window, "Tab")  # Focus restarts at Inspect.
+            desktop.key_event(window, "Return", repeat=True)
+            desktop.key_event(window, "Return", down=False)
+            desktop.key(window, "Return")
+            self.assertEqual(snapshot()["clicks"], 2)  # No extra snapshot from repeat.
+            # Close with both activation keys held; reuse the very same View.
+            desktop.key_event(window, "Return")
+            self.assertEqual(snapshot()["clicks"], 2)
+            desktop.key_event(window, "Space")
+            self.assertEqual(snapshot()["clicks"], 2)
+            desktop.close_window(window)
+            deadline = time.monotonic() + 5
+            reopened = None
+            while time.monotonic() < deadline:
+                reopened = desktop.find("ui keyboard test 1")
+                if reopened:
+                    break
+                time.sleep(0.02)
+            self.assertTrue(reopened, "keyboard View did not reopen")
+            desktop.key(reopened, "Tab")
+            desktop.key(reopened, "Return")
+            self.assertEqual(snapshot()["generation"], 1)
+            desktop.key(reopened, "Tab")
+            desktop.key(reopened, "Space")
+            desktop.click(reopened, initial["inspect"])
+            self.assertEqual(snapshot()["clicks"], 3)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and os.environ.get("UI_TEST_ISOLATED_X11") == "1",
+                         "mapping edits require scripts/test-xvfb.py")
+    def test_live_server_keyboard_mapping_change(self):
+        with self.fixture("keyboard_window", "ui keyboard test 0") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            with desktop.swapped_mapping():
+                desktop.key(window, "Tab")
+                desktop.key(window, "Return")
+                desktop.key(window, "Tab")
+                desktop.key(window, "Space")
+                desktop.click(window, initial["inspect"])
+                state = snapshot()
+                self.assertEqual((state["clicks"], state["changes"], state["checked"]), (1, 1, True))
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            desktop.click(window, initial["inspect"])
+            self.assertEqual(snapshot()["clicks"], 2)
 
     def test_checkbox_properties_visibility_and_native_activation(self):
         with self.fixture("checkbox_window", "ui checkbox test") as (desktop, window, snapshot):

@@ -405,6 +405,27 @@ fn void View.focus_next(&self, bool reverse = false)
 	if (self.focused) self.invalidate(self.focused.visible);
 }
 
+// Native adapters supply an identity and repeat metadata. Keep held keys across
+// widget focus changes/removal: a repeat must never target a replacement widget.
+// Tab repeats deliberately; activation occurs only on the initial key-down.
+enum ControlKey { NONE, TAB, ACTIVATE }
+
+fn void View.key_down(&self, char identity, ControlKey action, bool repeat = false, bool reverse = false)
+{
+	assert(!active_binding, "Bindings cannot dispatch keyboard input");
+	self.update();
+	bool held = self.held_keys[identity];
+	self.held_keys[identity] = true; // Set before callbacks, including self-removal.
+	if (action == TAB) self.focus_next(reverse);
+	if (action == ACTIVATE && !held && !repeat) self.activate_focused();
+}
+
+fn void View.key_up(&self, char identity)
+{
+	assert(!active_binding, "Bindings cannot dispatch keyboard input");
+	self.held_keys[identity] = false;
+}
+
 fn void View.activate_focused(&self)
 {
 	self.update();
@@ -416,6 +437,7 @@ fn void View.activate_focused(&self)
 fn void View.blur(&self)
 {
 	self.cancel_press();
+	self.held_keys = {};
 	self.pointer_known = false;
 	if (self.hovered) self.invalidate(self.hovered.visible);
 	self.hovered = null;

@@ -40,7 +40,7 @@ fn bool can_reset(void* context)
 
 fn int main()
 {
-	State{int} count = { .value = 5 };
+	State{int} count  = { .value = 5 };
 	State{bool} shown = { .value = true };
 	View view;
 	defer view.free();

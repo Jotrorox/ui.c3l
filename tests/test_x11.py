@@ -1,4 +1,5 @@
 """Exercise blank windows and the counter example against a simulated X server."""
+import json
 import os
 from pathlib import Path
 import socket
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/window"
 BINARY = EXAMPLE / "build/window"
 BLANK_BINARY = ROOT / "build/blank_window"
+KEYBOARD_BINARY = ROOT / "build/keyboard_window"
 
 
 def read_exact(connection, count):
@@ -49,7 +51,12 @@ class X11IntegrationTests(unittest.TestCase):
                         "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(BLANK_BINARY),
                         "--obj-out", str(ROOT / "build")], check=True)
 
-    def run_server(self, mode="close", authenticated=False, widgets=False):
+        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/keyboard_window.c3"),
+                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(KEYBOARD_BINARY),
+                        "--obj-out", str(ROOT / "build")], check=True)
+
+    def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False):
+        widgets = widgets or keyboard
         errors = []
         with tempfile.TemporaryDirectory() as temp, socket.socket(socket.AF_UNIX) as server:
             # Reserve a unique Linux abstract X socket without touching /tmp.
@@ -129,7 +136,7 @@ class X11IntegrationTests(unittest.TestCase):
                                 self.assertEqual((window, parent), (0x200001, 0x100))
                                 self.assertEqual(struct.unpack_from("<HH", request, 16), (800, 600))
                                 self.assertEqual(struct.unpack_from("<III", request, 28),
-                                                 (0x802, 0xFFFFFF, 0x22807F if widgets else 1 << 17))
+                                                 (0x802, 0xFFFFFF, 0x22C07F if widgets else 1 << 17))
                             elif opcode == 45 and widgets:  # OpenFont
                                 self.assertEqual(struct.unpack_from("<I", request, 4)[0], 0x200002)
                                 self.assertEqual(request[12:17], b"fixed")
@@ -162,11 +169,14 @@ class X11IntegrationTests(unittest.TestCase):
                             elif opcode == 8:
                                 self.assertEqual(struct.unpack_from("<I", request, 4)[0], window)
                                 self.assertEqual(properties[100], (4, 32, struct.pack("<I", 101)))
-                                self.assertEqual(properties[39], (31, 8, b"Native C3 window"))
-                                self.assertEqual(properties[102], (103, 8, b"Native C3 window"))
+                                self.assertEqual(properties[39], (31, 8, b"ui keyboard test 0" if keyboard else b"Native C3 window"))
+                                self.assertEqual(properties[102], (103, 8, b"ui keyboard test 0" if keyboard else b"Native C3 window"))
                                 break
                             else:
                                 self.fail(f"unexpected X11 opcode {opcode}")
+                        if keyboard:
+                            self.keyboard_scenario(connection, window, sequence, keycodes, mode)
+                            return
                         if widgets:
                             stage = 0
                             labels = []
@@ -174,9 +184,14 @@ class X11IntegrationTests(unittest.TestCase):
                             clips = {}
                             current_clip = None
 
+                            event_time = 1000
+
                             def input_event(kind, detail, x=0, y=0):
+                                nonlocal event_time
+                                event_time += 10
                                 event = bytearray(32)
                                 event[0:2] = bytes([kind | 0x80, detail])
+                                struct.pack_into("<I", event, 4, event_time)
                                 struct.pack_into("<I", event, 12, window)
                                 struct.pack_into("<hh", event, 24, x, y)
                                 connection.sendall(event)
@@ -227,6 +242,7 @@ class X11IntegrationTests(unittest.TestCase):
                                     self.assertNotIn((0, 0, 800, 600), fills)
                                     labels.clear()
                                     input_event(2, keycodes[0xFF0D])  # Mapped Return key.
+                                    input_event(3, keycodes[0xFF0D])
                                     stage = 2
                                 elif stage == 2 and label == "Count: 7":
                                     labels.clear()
@@ -242,6 +258,7 @@ class X11IntegrationTests(unittest.TestCase):
                                         unchecked_drawn = True
                                         labels.clear()
                                         input_event(2, keycodes[0x20])  # Restore with mapped Space.
+                                        input_event(3, keycodes[0x20])
                                         stage = 4
                                     colored_fills.clear()
                                 elif stage == 4:
@@ -288,13 +305,203 @@ class X11IntegrationTests(unittest.TestCase):
             thread = threading.Thread(target=serve, daemon=True)
             thread.start()
             environment = {**os.environ, "DISPLAY": f":{number}.0", "XAUTHORITY": str(authority)}
-            result = subprocess.run([str(BINARY if widgets else BLANK_BINARY)], env=environment,
+            result = subprocess.run([str(KEYBOARD_BINARY if keyboard else BINARY if widgets else BLANK_BINARY)], env=environment,
                                     capture_output=True, text=True, timeout=8)
             thread.join(6)
             self.assertFalse(thread.is_alive(), "test server did not finish")
             if errors:
+                errors[0].add_note(f"client exit={result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}")
                 raise errors[0]
             return result
+
+    def keyboard_scenario(self, connection, window, sequence, keycodes, mode):
+        # Read real renderer clips for clicks and count every request, including
+        # drawing requests, to test reply sequence matching on the live stream.
+        clips = {}
+        clip = None
+
+        def request():
+            nonlocal sequence, clip
+            header = read_exact(connection, 4)
+            sequence = (sequence + 1) & 0xFFFF
+            opcode, _, words = struct.unpack("<BBH", header)
+            data = header + read_exact(connection, words * 4 - 4)
+            if opcode == 59:
+                clip = struct.unpack_from("<hhHH", data, 12)
+            if opcode == 75:
+                label = data[18:18 + data[16] * 2].decode("utf-16-be")
+                clips[label] = clip
+            return opcode, data
+
+        while "Check" not in clips:
+            request()
+
+        timestamp = 1000
+
+        def event(kind, code=0, time=None, shift=False):
+            nonlocal timestamp
+            timestamp += 10
+            data = bytearray(32)
+            data[:2] = bytes([kind, code])
+            struct.pack_into("<I", data, 4, timestamp if time is None else time)
+            struct.pack_into("<I", data, 12, window)
+            struct.pack_into("<H", data, 28, int(shift))
+            return data
+
+        def key(symbol, down=True, repeat=False, shift=False):
+            code = keycodes[symbol]
+            if repeat:
+                when = timestamp + 10
+                connection.sendall(event(3, code, when))
+                # Split the repeat pair across writes; socket buffering is irrelevant.
+                data = event(2, code, when, shift)
+                connection.sendall(data[:9])
+                connection.sendall(data[9:])
+            else:
+                connection.sendall(event(2 if down else 3, code, shift=shift))
+
+        def cycle(symbol, shift=False):
+            key(symbol, shift=shift)
+            key(symbol, down=False, shift=shift)
+
+        def inspect():
+            x, y, width, height = clips["Inspect"]
+            for kind in (4, 5):
+                data = event(kind, 1)
+                struct.pack_into("<hh", data, 24, x + width // 2, y + height // 2)
+                connection.sendall(data)
+
+        def notify(kind=1, first=8, count=248):
+            data = bytearray(32)
+            data[0] = 34
+            data[4:7] = bytes([kind, first, count])
+            connection.sendall(data)
+
+        def close():
+            data = bytearray(32)
+            data[:2] = bytes([33, 32])
+            struct.pack_into("<III", data, 4, window, 100, 101)
+            connection.sendall(data)
+
+        cycle(0xFF09)  # Inspector.
+        cycle(0xFF09)  # Button.
+        key(0xFF0D)
+        key(0xFF0D)  # Repeated KeyPress without release.
+        key(0xFF0D, repeat=True)
+        inspect()  # clicks=1
+        key(0xFF0D, repeat=True)  # Newly focused inspector must NOT emit a snapshot.
+        cycle(0xFF09)
+        key(0xFF0D, repeat=True)
+        key(0xFF0D, down=False)
+        key(0xFF0D)
+        inspect()  # clicks=2
+        cycle(0xFF09)
+        cycle(0xFF09)
+        key(0x20)
+        key(0x20)
+        key(0x20, repeat=True)
+        key(0x20, down=False)
+        key(0x20)
+        key(0x20, down=False)
+        inspect()  # changes=2, checked=false
+
+        # MappingPointer does not produce a mapping request. A subsequent keyboard
+        # notification does, with exposure, extension, focus and input interleaved.
+        notify(2)
+        if mode == "bad_range":
+            notify(first=255, count=2)
+        else:
+            notify()
+        if mode == "bad_range":
+            try:
+                while connection.recv(4096):
+                    pass
+            except ConnectionResetError:
+                pass
+            return
+        while request()[0] != 101:
+            pass
+        mapping_sequence = sequence
+        expose = bytearray(32)
+        expose[0] = 12
+        struct.pack_into("<IHHHH", expose, 4, window, 0, 0, 800, 600)
+        connection.sendall(expose)
+        extension = bytearray(32)
+        extension[0] = 35
+        struct.pack_into("<I", extension, 4, 2)
+        connection.sendall(extension + b"payload!")
+        if mode == "map_error":
+            connection.sendall(bytes(32))
+        elif mode == "map_disconnect":
+            return
+        else:
+            old_codes = keycodes.copy()
+            keycodes = {0xFF09: 40, 0xFF0D: 41, 0x20: 42}
+            # Input arrives BEFORE the reply, but uses the new mapping. It must
+            # wait in order, then execute against the replacement mapping.
+            cycle(0xFF09)
+            cycle(0xFF0D)
+            cycle(0xFF09)
+            cycle(0x20)
+            inspect()  # clicks=3, changes=3
+            reply = bytearray(32 + 248 * 2 * 4)
+            reply[:2] = bytes([1, 2])
+            struct.pack_into("<HI", reply, 2, mapping_sequence, 248 * 2)
+            for symbol, code in keycodes.items():
+                struct.pack_into("<I", reply, 32 + (code - 8) * 8, symbol)
+            if mode == "map_sequence":
+                struct.pack_into("<H", reply, 2, (mapping_sequence - 1) & 0xFFFF)
+            elif mode == "map_width":
+                reply[1] = 0
+            elif mode == "map_length":
+                struct.pack_into("<I", reply, 4, 0xFFFFFFFF)
+            elif mode == "map_short_length":
+                struct.pack_into("<I", reply, 4, 1)
+            elif mode == "map_truncated":
+                connection.sendall(reply[:40])
+                return
+            connection.sendall(reply[:13])
+            connection.sendall(reply[13:])
+            if mode == "close":
+                # A second refresh from MappingModifier changes stride again.
+                notify(0)
+                while request()[0] != 101:
+                    pass
+                reply = bytearray(32 + 248 * 3 * 4)
+                reply[:2] = bytes([1, 3])
+                struct.pack_into("<HI", reply, 2, sequence, 248 * 3)
+                for symbol, code in keycodes.items():
+                    struct.pack_into("<I", reply, 32 + (code - 8) * 12, symbol)
+                connection.sendall(reply)
+                cycle(0xFF09, shift=True)  # Wrap backwards to checkbox.
+                cycle(0x20)
+                # Old mapping no longer activates. Release the previously held key.
+                for kind in (3, 2, 3):
+                    connection.sendall(event(kind, old_codes[0xFF0D]))
+                inspect()  # changes=4
+                close()
+        try:
+            while connection.recv(4096):
+                pass
+        except ConnectionResetError:
+            pass  # Invalid protocol frames close the socket with unread input.
+
+    def test_keyboard_repeat_cycles_and_live_mapping_refresh(self):
+        result = self.run_server(keyboard=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        states = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([(s["clicks"], s["changes"], s["checked"]) for s in states],
+                         [(1, 0, False), (2, 0, False), (2, 2, False),
+                          (3, 3, True), (3, 4, False)])
+
+    def test_live_mapping_protocol_failures_release_connection(self):
+        for mode in ("bad_range", "map_error", "map_disconnect", "map_sequence", "map_width",
+                     "map_length", "map_short_length", "map_truncated"):
+            with self.subTest(mode=mode):
+                result = self.run_server(keyboard=True, mode=mode)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("CONNECTION_FAILED" if mode in ("map_disconnect", "map_truncated")
+                              else "PROTOCOL_ERROR", result.stderr)
 
     def test_create_title_map_and_wm_close(self):
         result = self.run_server()
