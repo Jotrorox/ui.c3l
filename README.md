@@ -1,6 +1,6 @@
 # ui.c3l
 
-A small reactive retained-mode UI library for Windows and Linux (X11/XWayland),
+A small reactive retained-mode UI library for Windows and Linux (Wayland and X11/XWayland),
 with text, buttons, checkboxes, nested rows and columns, and vertical scrollbars.
 Requires C3 0.8.4 or newer.
 
@@ -38,6 +38,23 @@ changes and Top/Bottom controls:
 c3c run --path examples/window
 ```
 
+Linux chooses its backend at runtime. `auto` prefers Wayland when
+`WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, or `XDG_SESSION_TYPE=wayland` advertises it,
+and tries the default Wayland socket when only `XDG_RUNTIME_DIR` is available.
+If the connection, required protocols, or libraries are unavailable during
+initialization, it falls back to X11. Errors after initialization are returned
+to the caller. Set `UI_BACKEND=wayland` or `UI_BACKEND=x11` to force a backend;
+`UI_BACKEND=auto` (or unset) restores automatic selection.
+
+Wayland uses stable `xdg-shell`, shared-memory buffers, Cairo text rendering,
+and xkbcommon keyboard maps. Install the runtime libraries `libwayland-client0`,
+`libcairo2`, and `libxkbcommon0` (Debian/Ubuntu package names) for retained views.
+They are loaded dynamically; X11 requires no additional linked libraries.
+Pointer capture, scrolling, Tab/Shift+Tab, and Enter/Space work on both backends.
+Wayland requests server decorations where available; compositors requiring
+client decorations currently show a borderless window, controlled through
+their window-management shortcuts. Buffer scale is currently 1.
+
 ## Testing
 
 C3 0.8.4 and Python 3.12 or newer are required; Windows ARM64 uses Python 3.13
@@ -48,11 +65,16 @@ library through the parent directory.
 c3c test
 c3c test -O3 --build-dir build/release --output-dir build/release
 python3 -m unittest discover -s tests -p test_x11.py -v
+python3 -m unittest discover -s tests -p test_wayland.py -v
 python3 scripts/test-xvfb.py
+python3 scripts/test-wayland.py
 ```
 
-The last two commands exercise the Linux X11 protocol and an isolated desktop.
+The Python suites exercise both Linux protocols, rendering, input, and backend
+selection without using your desktop. The scripts use isolated Xvfb and headless
+Weston instances for native checks.
 Install `xvfb`, `xfonts-base`, `libx11-6`, and `libxtst6` for the desktop tests.
+Install `weston`, the Wayland runtime libraries above, and `xkb-data` for Wayland tests.
 On Windows, use `python scripts/test-windows.py`; it reports a skip if no input
 desktop is available.
 

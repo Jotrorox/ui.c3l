@@ -25,7 +25,9 @@ From the repository root:
 c3c run --path examples/window
 ```
 
-Requires C3 0.8.4 and a Windows desktop or a local X11/XWayland display on Linux.
+Requires C3 0.8.4 and a Windows desktop or a Wayland/X11/XWayland display on Linux.
+Linux selects the backend at runtime; set `UI_BACKEND=wayland` or `UI_BACKEND=x11`
+to force one. Wayland retained views load libwayland-client, Cairo, and xkbcommon.
 Close the window to exit and release its widgets and bindings.
 
 ## Modifiers
@@ -573,8 +575,8 @@ and `view.update()` before reading geometry, then `view.take_damage()` and
 `view.paint()` to draw. Input methods flush pending updates before targeting
 widgets. Damage remains one union rectangle and painting scans the tree.
 
-The backends retain their existing text limitations: core X11 `fixed` font with
-missing-glyph substitution on Linux, GDI on Windows, single-line UTF-8 labels
+The backends use core X11 `fixed` font with missing-glyph substitution on X11,
+Cairo's sans font on Wayland, and GDI on Windows, with single-line UTF-8 labels
 up to 4096 bytes, and no general shaping, font fallback, or accessibility API.
 The X11 renderer clips drawing to the top-left 32767 by 32767 pixels to stay
 within core protocol coordinate limits. Large scroll offsets still work because

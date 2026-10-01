@@ -33,7 +33,7 @@ def main():
                 raise RuntimeError(f"Xvfb failed to start: {display!r}")
             print(f"Native tests on isolated Xvfb :{display}", flush=True)
             environment = {**os.environ, "DISPLAY": f":{display}", "XAUTHORITY": str(Path(directory) / "no-authority"),
-                           "UI_NATIVE_TESTS": "1", "UI_TEST_ISOLATED_X11": "1"}
+                           "UI_NATIVE_TESTS": "1", "UI_TEST_ISOLATED_X11": "1", "UI_BACKEND": "x11"}
             result = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
                                      "-p", "test_native.py", "-v"],
                                     cwd=ROOT, env=environment, timeout=180)

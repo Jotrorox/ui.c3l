@@ -56,7 +56,8 @@ class X11IntegrationTests(unittest.TestCase):
         for name in ("blank_window", "keyboard_window", "scroll_window", "scrollbar_window", "counter_window"):
             compile_fixture(name, ROOT / "build")
 
-    def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False, scrolling=False, scrollbars=False):
+    def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False, scrolling=False, scrollbars=False,
+                   auto_wayland=False):
         widgets = widgets or keyboard or scrolling or scrollbars
         errors = []
         with tempfile.TemporaryDirectory() as temp, socket.socket(socket.AF_UNIX) as server:
@@ -312,7 +313,10 @@ class X11IntegrationTests(unittest.TestCase):
 
             thread = threading.Thread(target=serve, daemon=True)
             thread.start()
-            environment = {**os.environ, "DISPLAY": f":{number}.0", "XAUTHORITY": str(authority)}
+            environment = {**os.environ, "DISPLAY": f":{number}.0", "XAUTHORITY": str(authority),
+                           "UI_BACKEND": "auto" if auto_wayland else "x11",
+                           "WAYLAND_DISPLAY": str(Path(temp) / "unavailable-wayland")}
+            environment.pop("WAYLAND_SOCKET", None)
             result = subprocess.run([str(SCROLLBAR_BINARY if scrollbars else SCROLL_BINARY if scrolling else KEYBOARD_BINARY if keyboard else COUNTER_BINARY if widgets else BLANK_BINARY)], env=environment,
                                     capture_output=True, text=True, timeout=8)
             thread.join(6)
@@ -741,6 +745,10 @@ class X11IntegrationTests(unittest.TestCase):
         result = self.run_server()
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_auto_falls_back_to_x11_when_wayland_is_unavailable(self):
+        result = self.run_server(auto_wayland=True, widgets=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_local_authority_cookie(self):
         result = self.run_server(authenticated=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -768,7 +776,7 @@ class X11IntegrationTests(unittest.TestCase):
     def test_missing_and_remote_display(self):
         for display, error in [("", "DISPLAY_UNAVAILABLE"), ("remote:0", "UNSUPPORTED_DISPLAY")]:
             with self.subTest(display=display):
-                result = subprocess.run([str(BINARY)], env={**os.environ, "DISPLAY": display},
+                result = subprocess.run([str(BINARY)], env={**os.environ, "DISPLAY": display, "UI_BACKEND": "x11"},
                                         capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(error, result.stderr)

@@ -346,7 +346,7 @@ class NativeWindowTests(unittest.TestCase):
             desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
             try:
                 with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      env={**os.environ, "UI_TEST_REOPEN": "1" if reopen else "0"},
+                                      env={**os.environ, "UI_TEST_REOPEN": "1" if reopen else "0", "UI_BACKEND": "x11"},
                                       text=True) as process:
                     lines = queue.Queue()
 

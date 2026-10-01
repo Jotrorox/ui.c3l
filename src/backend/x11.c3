@@ -270,7 +270,7 @@ fn bool is_close_event(char[] message, uint window, uint protocols, uint delete_
 		read32(message, 8) == protocols && read32(message, 12) == delete_window;
 }
 
-fn void? open(WindowOptions options, View* view = null) => @pool()
+fn void? open_x11(WindowOptions options, View* view = null) => @pool()
 {
 	String value = (env::tget_var("DISPLAY") ?? ui::DISPLAY_UNAVAILABLE~)!;
 	if (!value.len) return ui::DISPLAY_UNAVAILABLE~;

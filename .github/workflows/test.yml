@@ -46,7 +46,7 @@ jobs:
           python-version: '3.13'
           architecture: ${{ matrix.arch }}
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base libx11-6 libxtst6
+        run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base libx11-6 libxtst6 weston libwayland-client0 libcairo2 libxkbcommon0 xkb-data
       - name: Set up C3 0.8.4 (x64)
         if: matrix.arch == 'x64'
         uses: Jotrorox/setup-c3@c96f205c661bcdd77d83c6e46dabcc0c17931f98 # v1
@@ -77,8 +77,12 @@ jobs:
         run: c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
       - name: Simulated X11 tests (no desktop)
         run: python3 -m unittest discover -s tests -p test_x11.py -v
+      - name: Wayland protocol, rendering, input, and selection tests
+        run: python3 -m unittest discover -s tests -p test_wayland.py -v
       - name: Native desktop and mapping tests on isolated Xvfb
         run: python3 scripts/test-xvfb.py
+      - name: Native Wayland checks on headless Weston
+        run: python3 scripts/test-wayland.py
   windows:
     name: Windows (${{ matrix.arch }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.runner }}

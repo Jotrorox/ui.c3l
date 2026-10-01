@@ -20,7 +20,9 @@ excuse
  Opens a blank native window and processes events until it is closed.
  Call on the main thread. Width and height are initial client-area dimensions
  in pixels. The title must be UTF-8, without NUL bytes, at most 4096 bytes.
- Linux requires a local X11 display (XWayland is supported).
+ Linux selects Wayland or local X11/XWayland at runtime. UI_BACKEND can force
+ "wayland" or "x11"; the default "auto" prefers an advertised Wayland session
+ and falls back to X11 if Wayland cannot initialize.
  All native resources are released before returning, including on failure.
 *>
 fn void? open_window(String title = "ui", int width = 800, int height = 600)
