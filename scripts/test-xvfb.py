@@ -34,7 +34,8 @@ def main():
             print(f"Native tests on isolated Xvfb :{display}", flush=True)
             environment = {**os.environ, "DISPLAY": f":{display}", "XAUTHORITY": str(Path(directory) / "no-authority"),
                            "UI_NATIVE_TESTS": "1", "UI_TEST_ISOLATED_X11": "1"}
-            result = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+            result = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
+                                     "-p", "test_native.py", "-v"],
                                     cwd=ROOT, env=environment, timeout=180)
             if result.returncode:
                 raise RuntimeError(f"desktop tests failed (exit {result.returncode})")

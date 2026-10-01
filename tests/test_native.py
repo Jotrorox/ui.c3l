@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from ctypes import wintypes
 import os
 import json
-from pathlib import Path
 import queue
 import subprocess
 import sys
@@ -17,8 +16,7 @@ import threading
 import time
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-
+from build_support import compile_fixture
 
 class XClientMessage(c.Structure):
     _fields_ = [("type", c.c_int), ("serial", c.c_ulong), ("send_event", c.c_int),
@@ -344,11 +342,7 @@ class NativeWindowTests(unittest.TestCase):
     @contextmanager
     def fixture(self, name, title, reopen=False, reopen_title="ui keyboard test 1"):
         with tempfile.TemporaryDirectory() as directory:
-            suffix = ".exe" if sys.platform == "win32" else ""
-            binary = Path(directory) / (name + suffix)
-            subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures" / (name + ".c3")),
-                            "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(binary),
-                            "--obj-out", directory], check=True)
+            binary = compile_fixture(name, directory)
             desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
             try:
                 with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -796,11 +790,7 @@ class NativeWindowTests(unittest.TestCase):
 
     def test_nested_input_resize_clipping_and_subtree_removal(self):
         with tempfile.TemporaryDirectory() as directory:
-            suffix = ".exe" if sys.platform == "win32" else ""
-            binary = Path(directory) / ("nested_window_test" + suffix)
-            subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/nested_window.c3"),
-                            "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(binary),
-                            "--obj-out", directory], check=True)
+            binary = compile_fixture("nested_window", directory)
             desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
             try:
                 with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -901,11 +891,7 @@ class NativeWindowTests(unittest.TestCase):
 
     def test_title_client_size_close_and_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
-            suffix = ".exe" if sys.platform == "win32" else ""
-            binary = Path(directory) / ("native_window_test" + suffix)
-            subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/native_window.c3"),
-                            "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(binary),
-                            "--obj-out", directory], check=True)
+            binary = compile_fixture("native_window", directory)
             desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
             try:
                 with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:

@@ -21,7 +21,8 @@ def main():
         return 0
     api.CloseDesktop(desktop)
     print("Input desktop available; running native Windows tests", flush=True)
-    return subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+    return subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
+                           "-p", "test_native.py", "-v"],
                           cwd=Path(__file__).resolve().parents[1],
                           env={**os.environ, "UI_NATIVE_TESTS": "1"}, timeout=180).returncode
 

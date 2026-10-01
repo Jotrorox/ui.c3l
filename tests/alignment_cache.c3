@@ -43,7 +43,7 @@ fn void alignment_incremental_mutations_match_full_layout() @test
 		{
 			Widget* target = widgets[alignment_random(&seed) % widgets.len];
 			Layout layout = target.layout;
-			switch (alignment_random(&seed) % 9)
+			switch (alignment_random(&seed) % 10)
 			{
 				case 0:
 					if (target.is_container())
@@ -79,6 +79,9 @@ fn void alignment_incremental_mutations_match_full_layout() @test
 						layout.gap = (int)(alignment_random(&seed) % 10);
 						test::eq(target.set_layout(layout), true);
 					}
+				case 9:
+					layout.fill = !layout.fill;
+					test::eq(target.set_layout(layout), true);
 			}
 		}
 		view.update();

@@ -10,6 +10,8 @@ import tempfile
 import threading
 import unittest
 
+from build_support import compile_fixture, compiler_flags
+
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/window"
 BINARY = EXAMPLE / "build/window"
@@ -49,23 +51,10 @@ def setup_reply():
 class X11IntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        subprocess.run(["c3c", "build", "--path", str(EXAMPLE)], check=True)
-        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/blank_window.c3"),
-                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(BLANK_BINARY),
-                        "--obj-out", str(ROOT / "build")], check=True)
-
-        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/keyboard_window.c3"),
-                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(KEYBOARD_BINARY),
-                        "--obj-out", str(ROOT / "build")], check=True)
-        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/scroll_window.c3"),
-                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(SCROLL_BINARY),
-                        "--obj-out", str(ROOT / "build")], check=True)
-        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/scrollbar_window.c3"),
-                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(SCROLLBAR_BINARY),
-                        "--obj-out", str(ROOT / "build")], check=True)
-        subprocess.run(["c3c", "compile", str(ROOT / "tests/fixtures/counter_window.c3"),
-                        "--libdir", str(ROOT.parent), "--lib", "ui", "-o", str(COUNTER_BINARY),
-                        "--obj-out", str(ROOT / "build")], check=True)
+        subprocess.run(["c3c", "build", "--path", str(EXAMPLE), *compiler_flags()],
+                       cwd=ROOT, check=True, timeout=60)
+        for name in ("blank_window", "keyboard_window", "scroll_window", "scrollbar_window", "counter_window"):
+            compile_fixture(name, ROOT / "build")
 
     def run_server(self, mode="close", authenticated=False, widgets=False, keyboard=False, scrolling=False, scrollbars=False):
         widgets = widgets or keyboard or scrolling or scrollbars

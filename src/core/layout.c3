@@ -3,8 +3,9 @@ import std::math;
 
 // All sizes are pixels. Zero width/height means content size, and zero
 // maximum means unbounded. Limits clamp the preferred size before placement.
-// Spacing and alignment apply to containers only. There is no wrapping or
-// flexing. START preserves the default geometry; STRETCH is cross-axis only.
+// Spacing and alignment apply to containers only. Fill opts a child into its
+// parent's remaining main-axis space without changing its preferred size.
+// START preserves the default geometry; STRETCH is cross-axis only.
 enum Alignment { START, CENTER, END, STRETCH }
 
 struct Layout
@@ -19,6 +20,7 @@ struct Layout
 	int gap;
 	Alignment main_align;
 	Alignment cross_align;
+	bool fill; // Allocate remaining space on the parent's main axis.
 }
 
 const int LAYOUT_LIMIT = 65535;
@@ -62,7 +64,7 @@ fn int constrain(int natural, int explicit_size, int minimum, int maximum) @priv
 fn bool rect_equal(Rect a, Rect b) @private =>
 	a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 
-// Invalid options leave the previous layout intact. Leaves only accept sizes.
+// Invalid options leave the previous layout intact. Leaves only accept sizing.
 fn bool Widget.set_layout(&self, Layout layout)
 {
 	assert(!active_binding, "Bindings cannot mutate widgets");
@@ -74,13 +76,14 @@ fn bool Widget.set_layout(&self, Layout layout)
 		old.max_width != layout.max_width || old.max_height != layout.max_height ||
 		old.padding != layout.padding || old.gap != layout.gap;
 	bool alignment_changed = old.main_align != layout.main_align || old.cross_align != layout.cross_align;
-	if (!size_changed && !alignment_changed) return true;
+	bool fill_changed = old.fill != layout.fill;
+	if (!size_changed && !alignment_changed && !fill_changed) return true;
 	self.layout = layout;
-	if (size_changed)
+	if (size_changed || fill_changed)
 	{
-		self.request_size();
+		if (size_changed) self.request_size();
 		// Explicit/auto sizes and maximums affect stretch even when the cached
-		// preferred size remains identical. The parent must place this child.
+		// preferred size remains identical. Fill only affects parent placement.
 		if (self.parent) { self.parent.request_layout(); }
 		else { self.owner.layout_dirty = true; }
 	}
@@ -220,9 +223,9 @@ fn void Widget.measure(&self)
 
 // Alignment only distributes nonnegative remaining space. Odd center pixels
 // stay at the end, and an overflowing group remains anchored at the start.
-fn int alignment_offset(Alignment alignment, int available, int used) @private
+fn int alignment_offset(Alignment alignment, int available, long used) @private
 {
-	int remaining = math::max(0, available - used);
+	int remaining = (int)math::max(0L, (long)available - used);
 	if (alignment == CENTER) return remaining / 2;
 	return alignment == END ? remaining : 0;
 }
@@ -240,22 +243,51 @@ fn int cross_size(Widget* child, bool row, int available, Alignment alignment) @
 	return math::min(preferred, available);
 }
 
+fn int main_size(Widget* child, bool row, int fill_space) @private
+{
+	if (fill_space < 0 || !child.layout.fill) return row ? child.desired.width : child.desired.height;
+	Layout layout = child.layout;
+	return constrain(fill_space, 0, row ? layout.min_width : layout.min_height,
+		row ? layout.max_width : layout.max_height);
+}
+
 // Shared by explicit containers and the implicit root Column. Main-axis sizes
-// keep their preferred size on overflow. Available cross space wins over min.
+// keep their preferred size unless opted into fill. Direct scroll-column
+// children retain preferred heights in their unbounded content space.
+// Available cross space wins over min; fill respects main-axis min/max.
 fn void place_children(Widget* first, bool row, Rect content, Rect clip, int gap,
 	Alignment main_align, Alignment cross_align, bool changed, bool scrolling = false,
 	int scroll_offset = 0, int scroll_content = -1) @private
 {
-	int used;
-	if (changed && main_align != START)
+	long used;
+	int fill_space = -1;
+	int fill_remainder;
+	if (changed)
 	{
+		int fills;
 		bool preceding;
 		for (Widget* child = first; child; child = child.next)
 		{
 			if (child.hidden) continue;
-			if (preceding) used = layout_add(used, gap);
-			used = layout_add(used, row ? child.desired.width : child.desired.height);
+			if (preceding) used += gap;
+			if (scroll_content < 0 && child.layout.fill) { fills++; }
+			else { used += row ? child.desired.width : child.desired.height; }
 			preceding = true;
+		}
+		if (fills)
+		{
+			int remaining = (int)math::max(0L, (long)(row ? content.width : content.height) - used);
+			fill_space = remaining / fills;
+			fill_remainder = remaining % fills;
+			// Equal shares are clamped independently; maximum caps leave slack
+			// for alignment, and minimums can overflow without shrinking siblings.
+			int remainder = fill_remainder;
+			for (Widget* child = first; child; child = child.next)
+			{
+				if (child.hidden || !child.layout.fill) continue;
+				used += main_size(child, row, fill_space + (remainder > 0 ? 1 : 0));
+				if (remainder) remainder--;
+			}
 		}
 	}
 	if (scroll_content >= 0) used = scroll_content;
@@ -269,16 +301,18 @@ fn void place_children(Widget* first, bool row, Rect content, Rect clip, int gap
 		Rect rect = child.bounds;
 		if (changed)
 		{
+			int main = main_size(child, row, fill_space < 0 ? -1 : fill_space + (fill_remainder > 0 ? 1 : 0));
+			if (child.layout.fill && fill_remainder) fill_remainder--;
 			int available = row ? content.height : content.width;
 			int cross = cross_size(child, row, available, cross_align);
 			int offset = alignment_offset(cross_align, available, cross);
 			int main_position = scrolling ? coordinate(cursor) : (int)math::min(cursor, (long)LAYOUT_LIMIT);
-			rect = row ? (Rect) { main_position, position_add(content.y, offset, scrolling), child.desired.width, cross } :
-				(Rect) { position_add(content.x, offset, scrolling), main_position, cross, child.desired.height };
+			rect = row ? (Rect) { main_position, position_add(content.y, offset, scrolling), main, cross } :
+				(Rect) { position_add(content.x, offset, scrolling), main_position, cross, main };
 		}
 		child.place(rect, clip, scrolling);
-		cursor = scrolling ? math::min((long)COORD_LIMIT, cursor + (row ? child.desired.width : child.desired.height) + gap) :
-			math::min((long)LAYOUT_LIMIT, cursor + layout_add(row ? child.desired.width : child.desired.height, gap));
+		cursor = scrolling ? math::min((long)COORD_LIMIT, cursor + (row ? rect.width : rect.height) + gap) :
+			math::min((long)LAYOUT_LIMIT, cursor + layout_add(row ? rect.width : rect.height, gap));
 	}
 }
 

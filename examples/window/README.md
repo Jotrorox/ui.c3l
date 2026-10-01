@@ -1,5 +1,6 @@
-This example builds a 360-pixel outer scroll column and a 128-pixel nested
-scroll column once, using `@` modifiers. Both opt into vertical scrollbars.
+This example builds an outer scroll column that fills the remaining window
+height (with a 64-pixel minimum) and a 128-pixel nested scroll column once, using
+`@` modifiers. Both opt into vertical scrollbars.
 Drag a thumb, click above or below it to move one page, or scroll with the mouse
 wheel. Dragging continues outside the window until release. **Tab** /
 **Shift+Tab** reveals and focuses offscreen controls. The nested list consumes
@@ -12,7 +13,8 @@ at zero. **Show extra rows** changes both lists' content heights without
 recreating widgets. Try hiding those rows while scrolled to the bottom: offsets
 clamp, the outer thumb grows, and the nested scrollbar disappears when only one
 row remains. The reserved gutters keep child widths stable. Resize the window
-to see automatic widths stretch while viewport heights stay fixed.
+to see automatic widths stretch and the outer viewport fill the remaining
+height while the nested viewport stays fixed.
 
 From the repository root:
 
@@ -112,10 +114,10 @@ A `Layout` is a small value object. Containers accept one on creation; use
 `widget.set_layout(layout)` to replace it later. The setter returns `false`
 without changing anything for invalid options. Container constructors require
 valid options. Unspecified size and spacing fields are zero; both alignment
-fields default to `START`.
+fields default to `START`, and `fill` defaults to `false`.
 
 C3 positional struct initializers require every field: existing positional
-`Layout` initializers need trailing `START, START` for the new alignment fields.
+`Layout` initializers need trailing `START, START, false` for alignment and fill.
 Designated initializers and default layouts keep their existing behavior.
 
 | Fields | Meaning |
@@ -127,6 +129,7 @@ Designated initializers and default layouts keep their existing behavior.
 | `gap` | Space between visible children; no leading or trailing space. |
 | `main_align` | `START`, `CENTER`, or `END` for the group of visible children. |
 | `cross_align` | `START`, `CENTER`, `END`, or `STRETCH` for each visible child. |
+| `fill` | Opt a child into its parent's remaining main-axis space. |
 
 Dimension and spacing values must be between 0 and 65535. A nonzero maximum must
 be at least its minimum. Preferred dimensions and ordinary layout coordinates
@@ -150,11 +153,39 @@ Placement runs from parents to children inside their padded content rectangles.
 A Row's main axis is horizontal and its cross axis vertical; a Column reverses
 those axes. Padding is removed before computing available space. Main-axis
 alignment positions the whole group of visible children, whose extent is the
-sum of their constrained preferred sizes plus intervening gaps. `START` adds no
+sum of their allocated main-axis sizes plus intervening gaps. `START` adds no
 offset, `CENTER` adds half the nonnegative remaining space rounded down, and
-`END` adds all of it. Children keep their preferred main-axis sizes. When the
-group overflows, all three choices anchor it at the start, with no negative
+`END` adds all of it. Children without `fill` keep their preferred main-axis sizes.
+When the group overflows, all three choices anchor it at the start, with no negative
 offset or proportional shrinking. Hidden children add neither size nor gaps.
+
+Set `.fill = true` on a child to use the remaining width in a Row or height in
+a Column, including the implicit root. Placement first subtracts the parent's
+padding, all visible non-filling siblings' constrained preferred main-axis sizes,
+and the gaps between visible children. The remaining nonnegative space replaces
+the filling child's preferred main-axis size, including a nonzero `width` or
+`height`, then its main-axis min/max constraints clamp the result. It can shrink
+below its preferred size; its minimum may overflow the parent when space is
+insufficient. Other siblings keep their sizes. Its cross-axis sizing and cached
+preferred size remain unchanged.
+
+Multiple visible filling children receive equal shares, with remainder pixels
+assigned in child order. Each share is clamped independently; space left by
+maximum caps is not redistributed. Main-axis alignment uses the final allocated
+group size, so a maximum-capped group can still be centered or end-aligned.
+An automatic-size parent still measures its children's preferred sizes; fill
+only allocates the space the parent receives during placement.
+
+```c3
+view.set_root_alignment(START, STRETCH);
+view.text("Heading");
+Widget* list = view.scroll_column({ .fill = true, .min_height = 64, .gap = 8 });
+list.button("Item");
+view.button("Footer");
+```
+
+The heading and footer keep their preferred heights. The list uses the remaining
+height after root padding and gaps, and updates its scroll extent when resized.
 
 Cross-axis `START`, `CENTER`, and `END` first cap each child's constrained
 preferred size to the available content space, then apply the same offset rule
@@ -197,8 +228,8 @@ panel stretches the automatic-width action row, whose button sits at its end.
 Setting `panel`'s explicit width would opt it out of root stretch; setting only
 its maximum width would cap that stretch.
 
-Changing only alignment, root spacing, or viewport size requires placement and
-clipping updates, reusing intrinsic sizes and text metrics. Widget size
+Changing only fill, alignment, root spacing, or viewport size requires placement
+and clipping updates, reusing intrinsic sizes and text metrics. Widget size
 constraints, padding, and gaps invalidate intrinsic measurements through their
 ancestors but still reuse unchanged text metrics. Alignment never changes
 intrinsic measurement. Runtime changes damage the old and new visible geometry
@@ -226,16 +257,20 @@ list.scroll_to(extent);              // Move to the bottom.
 The viewport's preferred size is measured like a Column: sum visible children's
 preferred heights and intervening gaps, take the largest preferred width, add
 padding and the optional scrollbar gutter, then apply explicit sizes and min/max.
-Its parent places this preferred size with the existing cross-axis cap and
-stretch rules. Set `height` or
-`max_height` to bound the viewport; an automatic height grows with content up to
+Its parent places the viewport with the existing cross-axis cap and stretch
+rules and optional main-axis fill. Set `height` or
+`max_height` to bound the viewport, or `fill = true` to use its parent's remaining
+height; an automatic non-filling height grows with content up to
 the dimension limit. Ordinary ancestors can further clip a viewport without
 resizing it or changing its extent. The implicit root never starts scrolling
 automatically.
 
 Content height is the sum of the immediate visible children's constrained
 preferred heights plus one gap between each pair. A nested scroll column
-contributes its viewport height to this sum. The maximum offset is
+contributes its preferred viewport height to this sum. Direct children of a
+scroll column retain their preferred heights even with `fill = true`, because
+the scrolling main axis is unbounded. Rows and ordinary Columns inside scroll
+content still allocate fill within their own bounds. The maximum offset is
 `max(0, content_height - max(0, viewport_height - 2 * padding))`. It can exceed
 65535 even though individual layout dimensions and spacing cannot. Padding
 stays stationary: scrolling subtracts the offset from child positions inside

@@ -27,7 +27,8 @@ fn int main()
 			.@on_click(&app.count, fn (c) => c.set(0))
 			.@enabled(&app.count, fn (c) => c.get() != 0);
 	};
-	view.@scroll_column({ .height = 360, .padding = 8, .gap = 8, .cross_align = STRETCH }; Widget* list)
+	view.@scroll_column({ .fill = true, .min_height = 64, .padding = 8, .gap = 8,
+		.cross_align = STRETCH }; Widget* list)
 	{
 		app.list = list;
 		list.set_scrollbar();

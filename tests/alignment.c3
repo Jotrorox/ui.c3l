@@ -455,8 +455,8 @@ fn void alignment_default_and_explicit_start_geometry_match() @test
 	alignment_rect(footer.bounds, 16, 49, 11, 9);
 	test::eq(view.take_damage().empty(), true);
 	// The original eight positional fields keep their order; C3 requires
-	// positional initializers to supply the two new fields as well.
-	Layout positional = { 10, 20, 1, 2, 30, 40, 3, 4, START, START };
+	// positional initializers to supply alignment and fill fields as well.
+	Layout positional = { 10, 20, 1, 2, 30, 40, 3, 4, START, START, false };
 	test::eq(positional.main_align, Alignment.START);
 	test::eq(positional.cross_align, Alignment.START);
 	test::eq(positional.valid(), true);

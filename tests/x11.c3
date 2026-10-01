@@ -1,6 +1,28 @@
 module ui::backend @feat(LINUX);
 import std::core::test;
 
+fn void wire_integers_use_little_endian_at_unaligned_offsets() @test
+{
+	// X11 packets have a fixed byte layout on both x64 and ARM64.
+	char[10] buffer = { 0xaa, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xbb };
+	char[] bytes = buffer[..];
+	test::eq(read16(bytes, 1), (ushort)0x2301);
+	test::eq(read32(bytes, 1), 0x67452301u);
+	test::eq(read32(bytes, 5), 0xefcdab89u);
+	write32(bytes, 3, 0xfedcba98u);
+	test::eq(bytes[2], (char)0x23);
+	test::eq(bytes[3], (char)0x98);
+	test::eq(bytes[4], (char)0xba);
+	test::eq(bytes[5], (char)0xdc);
+	test::eq(bytes[6], (char)0xfe);
+	test::eq(bytes[7], (char)0xcd);
+	test::eq(read32(bytes, 3), 0xfedcba98u);
+	write16(bytes, 7, 0xffff);
+	test::eq(read16(bytes, 7), (ushort)0xffff);
+	test::eq(bytes[6], (char)0xfe);
+	test::eq(bytes[9], (char)0xbb);
+}
+
 fn void parses_local_displays() @test
 {
 	Display display = parse_display(":0")!!;
