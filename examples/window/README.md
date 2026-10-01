@@ -7,7 +7,10 @@ wheel. Dragging continues outside the window until release. **Tab** /
 wheel input until it reaches the requested end; the next wheel event can move
 the outer list. **Enter** / **Space** activates a focused control.
 
-The toolbar stays above the list. **Top** and **Bottom** use the programmatic
+The toolbar is a content-sized column above the list and keeps its natural
+height when the window resizes. The outer list alone uses `fill = true`, so its
+scroll extent uses the allocated viewport height after padding.
+**Top** and **Bottom** use the programmatic
 scrolling API. Item buttons change the reactive counter; **Reset** is disabled
 at zero. **Show extra rows** changes both lists' content heights without
 recreating widgets. Try hiding those rows while scrolled to the bottom: offsets

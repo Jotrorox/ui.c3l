@@ -16,17 +16,22 @@ fn int main()
 	defer view.free();
 
 	view.set_root_alignment(START, STRETCH);
-	view.text("Drag thumbs, click tracks, or wheel; Tab reveals controls.");
-	view.text().@text(&app.count, "Count: %s");
-	view.@row({ .gap = 8 }; Widget* controls)
+	// The toolbar keeps its content height; only the list fills remaining space.
+	view.@column({ .gap = 8, .cross_align = STRETCH }; Widget* toolbar)
 	{
-		controls.checkbox("Show extra rows").@checked(&app.extra);
-		controls.button("Top").@on_click(&app, fn (c) { c.list.scroll_to(0); });
-		controls.button("Bottom").@on_click(&app, fn (c) { c.list.scroll_to(c.list.scroll_extent()); });
-		controls.button("Reset")
-			.@on_click(&app.count, fn (c) => c.set(0))
-			.@enabled(&app.count, fn (c) => c.get() != 0);
+		toolbar.text("Drag thumbs, click tracks, or wheel; Tab reveals controls.");
+		toolbar.text().@text(&app.count, "Count: %s");
+		toolbar.@row({ .gap = 8 }; Widget* controls)
+		{
+			controls.checkbox("Show extra rows").@checked(&app.extra);
+			controls.button("Top").@on_click(&app, fn (c) { c.list.scroll_to(0); });
+			controls.button("Bottom").@on_click(&app, fn (c) { c.list.scroll_to(c.list.scroll_extent()); });
+			controls.button("Reset")
+				.@on_click(&app.count, fn (c) => c.set(0))
+				.@enabled(&app.count, fn (c) => c.get() != 0);
+		};
 	};
+	// Scroll extent follows this allocated viewport height on each resize.
 	view.@scroll_column({ .fill = true, .min_height = 64, .padding = 8, .gap = 8,
 		.cross_align = STRETCH }; Widget* list)
 	{
