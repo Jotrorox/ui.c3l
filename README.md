@@ -1,6 +1,6 @@
 # ui.c3l
 
-A small reactive retained-mode UI library for Windows and Linux (Wayland and X11/XWayland),
+A small reactive retained-mode UI library for macOS, Windows, and Linux (Wayland and X11/XWayland),
 with text, buttons, checkboxes, nested rows and columns, and vertical scrollbars.
 Requires C3 0.8.4 or newer.
 
@@ -37,6 +37,13 @@ changes and Top/Bottom controls:
 ```sh
 c3c run --path examples/window
 ```
+
+macOS uses AppKit windows and drawing through C3's Objective-C runtime bindings.
+It links only system frameworks, with no bridge library or additional runtime
+dependencies. Call `open_window()` or `View.open()` on the main thread. Dimensions
+and input coordinates use logical points; AppKit supplies Retina rendering.
+Mouse capture, nested wheel/trackpad scrolling, Tab/Shift+Tab, Enter/Space, and
+Command-W are supported on Apple Silicon and Intel.
 
 Linux chooses its backend at runtime. `auto` prefers Wayland when
 `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, or `XDG_SESSION_TYPE=wayland` advertises it,
@@ -78,16 +85,26 @@ Install `weston`, the Wayland runtime libraries above, and `xkb-data` for Waylan
 On Windows, use `python scripts/test-windows.py`; it reports a skip if no input
 desktop is available.
 
+On macOS, `c3c test` also exercises AppKit text metrics, native view lifetime,
+keyboard and pointer metadata, fractional trackpad scrolling, and bitmap drawing
+with independent widget clips. These tests do not open desktop windows. Run
+`c3c run --path examples/window` for interactive checks: toggle extra rows,
+scroll each nested list, drag its thumb outside the window, resize, and close.
+Use `--target macos-x64 --linker=cc` to test Intel binaries under Rosetta on
+Apple Silicon. The system linker supports newer Apple SDK formats than the
+compiler's bundled cross-linker.
+
 Set `UI_TEST_OPTIMIZATION=release` to compile the Python integration fixtures and
 example with `-O3` (the default is `debug`, using `-O0`). CI runs both profiles on
-native Linux and Windows x64 and ARM64 runners, with explicit compiler targets.
+native Linux and Windows x64 and ARM64 runners, plus a macOS Apple Silicon runner
+testing ARM64 and Intel targets (the latter under Rosetta), with explicit compiler targets.
 Each matrix job reports independently. C3 tests in `tests/*.c3` are discovered
 automatically; window fixtures remain in `tests/fixtures/`.
 
-The x64 jobs use the pinned C3 setup action. Windows ARM64 uses the official
+The Linux and Windows x64 jobs use the pinned C3 setup action. Windows ARM64 uses the official
 archive verified by SHA-256; Linux ARM64 builds the pinned C3 0.8.4 source with
 LLVM/LLD 19 and caches the compiler. `scripts/install-c3.py --dest <new-directory>`
-also supports these native installations locally.
+also supports these native installations locally, including macOS ARM64.
 
 ## License
 

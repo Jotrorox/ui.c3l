@@ -19,7 +19,8 @@ excuse
 <*
  Opens a blank native window and processes events until it is closed.
  Call on the main thread. Width and height are initial client-area dimensions
- in pixels. The title must be UTF-8, without NUL bytes, at most 4096 bytes.
+ in pixels (logical points on macOS, with native Retina rendering). The title
+ must be UTF-8, without NUL bytes, at most 4096 bytes.
  Linux selects Wayland or local X11/XWayland at runtime. UI_BACKEND can force
  "wayland" or "x11"; the default "auto" prefers an advertised Wayland session
  and falls back to X11 if Wayland cannot initialize.

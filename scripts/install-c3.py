@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install native C3 0.8.4 on Linux/Windows x64/ARM64, verified by SHA-256.
+"""Install native C3 0.8.4 on Linux/Windows x64/ARM64 or macOS ARM64, verified by SHA-256.
 
 Linux ARM64 builds the pinned release source using CMake, Ninja and LLVM/LLD 19.
 """
@@ -18,6 +18,7 @@ import zipfile
 VERSION = "0.8.4"
 # Digests from https://api.github.com/repos/c3lang/c3c/releases/tags/v0.8.4
 ARCHIVES = {
+    ("Darwin", "arm64"): ("c3-macos.zip", "b9c924943d5075fa79a506b5b9e169f46e4352cc9dab42ab466566b5e087c21d"),
     ("Linux", "x64"): ("c3-linux-static.tar.gz", "5e996d88feeddf8aca9bdd374233665c90bd3f57c4aec97d49f3dffc48ec54b6"),
     ("Windows", "x64"): ("c3-windows.zip", "9da56ed7b9302ce21737f6562a32dbcf28fb527507c0babcd37234526b5ac0d5"),
     ("Windows", "arm64"): ("c3-windows-aarch64.zip", "d5673f1bb708f4bba696f1ad8dd321c16572bed58e890b5f048241aa841dc1c8"),
@@ -44,7 +45,7 @@ def verify_compiler(executable, architecture):
     print(result, end="")
     if f"C3 Compiler Version:       {VERSION}" not in result:
         raise RuntimeError("installed compiler reports a different version")
-    triple_arch = {"x64": "x86_64", "arm64": "aarch64"}[architecture]
+    triple_arch = {"x64": "x86_64", "arm64": "arm64" if platform.system() == "Darwin" else "aarch64"}[architecture]
     if f"LLVM default target:       {triple_arch}-" not in result:
         raise RuntimeError(f"installed compiler is not native {architecture}")
 
@@ -58,7 +59,7 @@ def main():
     system = platform.system()
     from_source = (system, architecture) == ("Linux", "arm64")
     if not from_source and (system, architecture) not in ARCHIVES:
-        parser.error("supported platforms are Linux/Windows x64 and ARM64")
+        parser.error("supported platforms are Linux/Windows x64 and ARM64, and macOS ARM64")
     if args.dest.exists():
         parser.error("destination already exists; choose a new directory")
     if from_source:
@@ -91,6 +92,9 @@ def main():
                 raise RuntimeError(f"unexpected archive layout: {candidates}")
             args.dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(candidates[0].parent, args.dest)
+    if system == "Darwin":
+        # zipfile does not preserve the executable bit from the macOS archive.
+        (args.dest / executable).chmod(0o755)
     verify_compiler(args.dest / executable, architecture)
 
 

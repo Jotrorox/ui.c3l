@@ -2,6 +2,16 @@
   "provides" : "ui",
   "linklib-dir" : "linked-libs",
   "targets" : {
+    "macos-aarch64" : {
+      "link-args" : [],
+      "dependencies" : [],
+      "linked-libraries" : ["Cocoa.framework", "CoreGraphics.framework"]
+    },
+    "macos-x64" : {
+      "link-args" : [],
+      "dependencies" : [],
+      "linked-libraries" : ["Cocoa.framework", "CoreGraphics.framework"]
+    },
     "linux-aarch64" : {
       "link-args" : [],
       "dependencies" : [],
