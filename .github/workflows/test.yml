@@ -80,7 +80,7 @@ jobs:
           python-version: '3.13'
           architecture: ${{ matrix.arch }}
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base libx11-6 libxtst6 weston libwayland-client0 libcairo2 libxkbcommon0 xkb-data gdb
+        run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base libx11-6 libxtst6 weston libwayland-client0 libcairo2 libxkbcommon0 xkb-data
       - name: Set up C3 0.8.4 (x64)
         if: matrix.arch == 'x64'
         uses: Jotrorox/setup-c3@c96f205c661bcdd77d83c6e46dabcc0c17931f98 # v1
@@ -107,12 +107,13 @@ jobs:
         run: c3c --version
       - name: C3 tests
         run: |
-          c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} --suppress-run --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
+          test_flags=()
           if [ "${{ matrix.arch }}:${{ matrix.profile }}" = "arm64:release" ]; then
-            timeout 120s gdb --batch --return-child-result -ex run -ex 'thread apply all bt' --args "$RUNNER_TEMP/ui-tests/testrun"
-          else
-            timeout 120s "$RUNNER_TEMP/ui-tests/testrun"
+            # C3 0.8.4/LLVM 19 corrupts the test allocator in a merged ARM64 module.
+            test_flags+=(--single-module=no)
           fi
+          c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} "${test_flags[@]}" --suppress-run --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
+          timeout 120s "$RUNNER_TEMP/ui-tests/testrun"
       - name: Example build
         run: c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
       - name: Simulated X11 tests (no desktop)
