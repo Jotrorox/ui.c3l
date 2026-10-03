@@ -352,8 +352,7 @@ fn void? XCanvas.event(&self, View* view, char[] event)
 			bool repeat = self.release_seen[event[1]] && self.release_time[event[1]] == read32(event, 4);
 			self.release_seen[event[1]] = false;
 			uint symbol = read32(self.keymap, (sz)(event[1] - self.setup.min_keycode) * self.keysyms_per_key * 4);
-			view.key_down(event[1], symbol == 0xff09 || symbol == 0xfe20 ? TAB :
-				(symbol == 0xff0d || symbol == 0x20 ? ACTIVATE : NONE), repeat,
+			view.key_down(event[1], keysym_control(symbol), repeat,
 				(read16(event, 28) & 1) != 0);
 		default:
 	}

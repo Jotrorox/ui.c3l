@@ -314,12 +314,13 @@ fn void WaylandWindow.key(&self, uint key, bool down, bool repeat = false)
 		return;
 	}
 	uint sym = self.xkb.state ? self.xkb.sym(self.xkb.state, key + 8) : 0;
-	ControlKey action = sym == 0xff09 || sym == 0xfe20 ? TAB : (sym == 0xff0d || sym == 0xff8d || sym == 32 ? ACTIVATE : NONE);
+	ControlKey action = keysym_control(sym);
 	bool shift = self.xkb.state && self.xkb.mod_active(self.xkb.state, "Shift", 1 << 3) > 0;
 	self.view.key_down((char)key, action, repeat, shift);
 	if (!repeat)
 	{
-		self.repeating = action == TAB && self.repeat_rate > 0;
+		self.repeating = (action == TAB || action == PAGE_UP || action == PAGE_DOWN ||
+			action == SCROLL_HOME || action == SCROLL_END) && self.repeat_rate > 0;
 		if (self.repeating)
 		{
 			self.repeat_key = key;

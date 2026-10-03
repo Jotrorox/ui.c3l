@@ -52,6 +52,31 @@ fn void macos_keyboard_repeat_shift_shortcuts_and_keyup() @test
 	mac_key(&view, true, 256, false, 0);
 }
 
+fn void macos_scroll_keys_repeat_release_and_shortcuts() @test
+{
+	View view;
+	defer view.free();
+	view.resize(300, 200);
+	Widget* panel = view.scroll_column({ .width = 100, .height = 50 });
+	panel.button("tall").set_layout({ .height = 240 });
+	view.focus_next();
+	mac_key(&view, true, 121, false, 0); // Page Down.
+	test::eq(panel.scroll_offset(), 50);
+	mac_key(&view, true, 121, true, 0);
+	test::eq(panel.scroll_offset(), 100);
+	mac_key(&view, false, 121, false, 0);
+	test::eq(view.held_keys[121], false);
+	mac_key(&view, true, 116, false, 0); // Page Up.
+	test::eq(panel.scroll_offset(), 50);
+	mac_key(&view, true, 119, false, 0); // End.
+	test::eq(panel.scroll_offset(), 190);
+	mac_key(&view, true, 115, false, 1 << 20); // Command-Home remains a shortcut.
+	test::eq(panel.scroll_offset(), 190);
+	mac_key(&view, false, 115, false, 0);
+	mac_key(&view, true, 115, false, 0); // Home.
+	test::eq(panel.scroll_offset(), 0);
+}
+
 fn void macos_wheel_lines_precise_fractions_reversal_and_nested_bubbling() @test
 {
 	View view;

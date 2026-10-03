@@ -134,8 +134,20 @@ fn void mac_key(View* view, bool down, ushort key, bool repeat, ulong modifiers)
 	if (key >= 256) return;
 	if (!down) { view.key_up((char)key); return; }
 	bool shortcut = (modifiers & ((1 << 18) | (1 << 19) | (1 << 20))) != 0;
-	view.key_down((char)key, shortcut ? NONE : (key == 48 ? TAB :
-		(key == 36 || key == 76 || key == 49 ? ACTIVATE : NONE)), repeat, (modifiers & (1 << 17)) != 0);
+	ControlKey action = NONE;
+	if (!shortcut) switch (key)
+	{
+		case 48: action = TAB;
+		case 36:
+		case 76:
+		case 49: action = ACTIVATE;
+		case 116: action = PAGE_UP;
+		case 121: action = PAGE_DOWN;
+		case 115: action = SCROLL_HOME;
+		case 119: action = SCROLL_END;
+		default:
+	}
+	view.key_down((char)key, action, repeat, (modifiers & (1 << 17)) != 0);
 }
 
 fn void mac_wheel(View* view, double* remainder, int x, int y, double delta, bool precise) @private

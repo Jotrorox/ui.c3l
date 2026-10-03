@@ -20,7 +20,9 @@ view.@scroll_column({ .fill = true, .min_height = 64, .padding = 8, .gap = 8,
 
 `set_scrollbar()` opts a scroll column into a reserved gutter with a proportional
 thumb while overflowing. Drag the thumb, click the track to move one page, or
-use the wheel; nested lists bubble wheel input at their ends. Tab reveals
+use the wheel; nested lists bubble wheel input at their ends. PageUp/PageDown
+move one viewport, and Home/End move to its limits, starting at the focused
+control's nearest scroll container and bubbling at boundaries. Tab reveals
 offscreen controls. Scroll container handles expose `scroll_to(y)`, `scroll_by(dy)`,
 `scroll_offset()`, and `scroll_extent()` for programmatic scrolling. Rows and
 columns retain start, center, and end alignment, plus cross-axis stretch for
@@ -42,8 +44,8 @@ macOS uses AppKit windows and drawing through C3's Objective-C runtime bindings.
 It links only system frameworks, with no bridge library or additional runtime
 dependencies. Call `open_window()` or `View.open()` on the main thread. Dimensions
 and input coordinates use logical points; AppKit supplies Retina rendering.
-Mouse capture, nested wheel/trackpad scrolling, Tab/Shift+Tab, Enter/Space, and
-Command-W are supported on Apple Silicon and Intel.
+Mouse capture, nested wheel/trackpad and keyboard scrolling, Tab/Shift+Tab,
+Enter/Space, and Command-W are supported on Apple Silicon and Intel.
 
 Linux chooses its backend at runtime. `auto` prefers Wayland when
 `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, or `XDG_SESSION_TYPE=wayland` advertises it,
@@ -57,7 +59,8 @@ Wayland uses stable `xdg-shell`, shared-memory buffers, Cairo text rendering,
 and xkbcommon keyboard maps. Install the runtime libraries `libwayland-client0`,
 `libcairo2`, and `libxkbcommon0` (Debian/Ubuntu package names) for retained views.
 They are loaded dynamically; X11 requires no additional linked libraries.
-Pointer capture, scrolling, Tab/Shift+Tab, and Enter/Space work on both backends.
+Pointer capture, wheel and keyboard scrolling, Tab/Shift+Tab, and Enter/Space
+work on both backends.
 Wayland requests server decorations where available; compositors requiring
 client decorations currently show a borderless window, controlled through
 their window-management shortcuts. Buffer scale is currently 1.
