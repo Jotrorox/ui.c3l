@@ -270,7 +270,7 @@ fn Rect reveal_clip(Widget* widget) @private
 // placement and assigns focus. Rejected candidates cause no scroll or damage.
 fn bool reveal_candidate(Widget* widget, bool apply) @private
 {
-	if ((widget.kind != BUTTON && widget.kind != CHECKBOX) ||
+	if ((widget.kind != BUTTON && widget.kind != CHECKBOX && widget.kind != TEXT_FIELD) ||
 		!widget.is_enabled() || !widget.is_visible()) return false;
 	Rect target = widget.bounds;
 	if (target.empty()) return false;

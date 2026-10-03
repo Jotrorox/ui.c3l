@@ -285,6 +285,33 @@ fn void? XCanvas.paint(&self, View* view)
 	return view.paint(&renderer, view.take_damage());
 }
 
+fn uint XCanvas.key_symbol(&self, char code, uint modifiers)
+{
+	sz offset = (sz)(code - self.setup.min_keycode) * self.keysyms_per_key * 4;
+	uint level = (modifiers & 128) && self.keysyms_per_key >= 4 ? 2 : 0; // Mod5 / group 2.
+	uint lower = read32(self.keymap, offset + (sz)level * 4);
+	uint upper = level + 1 < self.keysyms_per_key ? read32(self.keymap, offset + (sz)(level + 1) * 4) : 0;
+	// Core maps may omit the shifted symbol for alphabetic keys.
+	if (!upper && ((lower >= 'a' && lower <= 'z') || (lower >= 0xe0 && lower <= 0xfe && lower != 0xf7))) upper = lower - 32;
+	bool shift = (modifiers & 1) != 0;
+	bool letter = ((lower >= 'a' && lower <= 'z') || (lower >= 0xe0 && lower <= 0xfe && lower != 0xf7)) && upper == lower - 32;
+	if (letter && (modifiers & 2)) shift = !shift; // CapsLock.
+	return shift && upper ? upper : lower;
+}
+
+// Core X11 has keysyms, not committed character messages. This minimal adapter
+// translates printable Latin-1/Unicode keysyms after layout/modifier resolution.
+// XIM and Compose/preedit are intentionally left to a future input adapter.
+fn void x11_commit(View* view, uint symbol) @private => @pool()
+{
+	uint code = symbol;
+	if (symbol >= 0x01000100 && symbol <= 0x0110ffff) { code = symbol & 0xffffff; }
+	else if (symbol > 255) { return; }
+	if (code >= 0xd800 && code <= 0xdfff) return;
+	Char32[1] chars = { code };
+	view.text_input(string::from_utf32(tmem, chars[..])!!);
+}
+
 fn void? XCanvas.event(&self, View* view, char[] event)
 {
 	uint type = event[0] & 0x7f;
@@ -302,7 +329,7 @@ fn void? XCanvas.event(&self, View* view, char[] event)
 		case 4: // ButtonPress; the X server implicitly captures until release.
 			if (read32(event, 12) != self.setup.window) return;
 			if (event[1] == 4 || event[1] == 5) { view.scroll_wheel(x, y, event[1] == 4 ? -40 : 40); }
-			else if (event[1] == 1) { view.pointer_down(x, y); }
+			else if (event[1] == 1) { view.pointer_down(x, y, (read16(event, 28) & 1) != 0); }
 		case 5:
 			if (read32(event, 12) == self.setup.window && event[1] == 1) view.pointer_up(x, y);
 		case 6: // Captured MotionNotify keeps signed coordinates outside the window.
@@ -313,7 +340,7 @@ fn void? XCanvas.event(&self, View* view, char[] event)
 			if (event[30] == 2) view.cancel_press(); // NotifyUngrab: capture ended.
 			// Crossing events are not drag motion. In particular, a synthetic
 			// (-1,-1) leave would jump a captured thumb to the top endpoint.
-			if (!view.scroll_pressed) view.pointer_move(type == 7 ? x : -1, type == 7 ? y : -1);
+			if (!view.has_pointer_capture()) view.pointer_move(type == 7 ? x : -1, type == 7 ? y : -1);
 		case 18: // UnmapNotify ends both pointer and keyboard interactions.
 			if (read32(event, 8) == self.setup.window)
 			{
@@ -351,9 +378,16 @@ fn void? XCanvas.event(&self, View* view, char[] event)
 			// fragmented traffic and interleaved replies cannot break detection.
 			bool repeat = self.release_seen[event[1]] && self.release_time[event[1]] == read32(event, 4);
 			self.release_seen[event[1]] = false;
-			uint symbol = read32(self.keymap, (sz)(event[1] - self.setup.min_keycode) * self.keysyms_per_key * 4);
-			view.key_down(event[1], keysym_control(symbol), repeat,
-				(read16(event, 28) & 1) != 0);
+			view.update();
+			ulong epoch = view.focus_epoch;
+			uint modifiers = read16(event, 28);
+			uint symbol = self.key_symbol(event[1], modifiers);
+			ControlKey action = keysym_control(symbol);
+			bool shortcut = (modifiers & (4 | 8 | 64)) != 0; // Ctrl, Alt, Super.
+			if (shortcut) action = (modifiers & 4) && !(modifiers & (8 | 64)) &&
+				(symbol == 'a' || symbol == 'A') ? SELECT_ALL : NONE;
+			view.key_down(event[1], action, repeat, (modifiers & 1) != 0);
+			if (!shortcut && epoch == view.focus_epoch) x11_commit(view, symbol);
 		default:
 	}
 }

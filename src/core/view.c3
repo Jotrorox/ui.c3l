@@ -29,6 +29,7 @@ struct View
 	Widget* hovered;
 	Widget* pressed;
 	Widget* focused;
+	ulong focus_epoch; // Invalidates native partial text commits on focus changes.
 	Widget* keyboard_scroll; // Retains the receiver when scrolling clips focus.
 	Widget* scroll_pressed; // Cleared before its target can be detached or freed.
 	bool scroll_press_active; // Release stays consumed even after cancellation.

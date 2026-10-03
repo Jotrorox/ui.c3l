@@ -198,6 +198,7 @@ fn void Widget.measure(&self)
 			self.text_size.width = math::clamp(self.text_size.width, 0, LAYOUT_LIMIT);
 			self.text_size.height = math::clamp(self.text_size.height, 0, LAYOUT_LIMIT);
 			self.text_dirty = false;
+			if (self.kind == TEXT_FIELD) self.reveal_caret();
 		}
 		size = self.text_size;
 		if (self.kind == BUTTON)
@@ -210,6 +211,12 @@ fn void Widget.measure(&self)
 			size.width = layout_add(CHECKBOX_SIZE + CHECKBOX_PADDING * 2,
 				self.content.len ? layout_add(CHECKBOX_GAP, size.width) : 0);
 			size.height = layout_add(math::max(CHECKBOX_SIZE, size.height), CHECKBOX_PADDING * 2);
+		}
+		else if (self.kind == TEXT_FIELD)
+		{
+			// Editing does not grow the control or move its siblings.
+			size.width = TEXT_FIELD_WIDTH;
+			size.height = layout_add(math::max(16, size.height), TEXT_FIELD_PADDING * 2);
 		}
 	}
 	Layout layout = self.layout;
@@ -333,6 +340,7 @@ fn void Widget.place(&self, Rect bounds, Rect ancestor_clip, bool scrolling = fa
 	self.bounds = bounds;
 	self.visible = visible;
 	self.scroll_space = scrolling;
+	if (self.kind == TEXT_FIELD) self.reveal_caret();
 	if (self.is_container())
 	{
 		Rect content = self.content_rect();

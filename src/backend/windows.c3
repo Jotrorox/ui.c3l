@@ -15,6 +15,8 @@ struct WinWindow
 	View* view;
 	WinCanvas canvas;
 	int wheel_remainder;
+	ushort text_surrogate;
+	ulong text_epoch;
 }
 
 fn Win32_LRESULT window_proc(Win32_HWND hwnd, uint message, Win32_WPARAM wparam, Win32_LPARAM lparam) @private

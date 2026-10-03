@@ -1,7 +1,8 @@
 # ui.c3l
 
 A small reactive retained-mode UI library for macOS, Windows, and Linux (Wayland and X11/XWayland),
-with text, buttons, checkboxes, nested rows and columns, and vertical scrollbars.
+with text, buttons, checkboxes, single-line text fields, nested rows and columns,
+and vertical scrollbars.
 Requires C3 0.8.4 or newer.
 
 ```c3
@@ -21,7 +22,7 @@ view.@scroll_column({ .fill = true, .min_height = 64, .padding = 8, .gap = 8,
 `set_scrollbar()` opts a scroll column into a reserved gutter with a proportional
 thumb while overflowing. Drag the thumb, click the track to move one page, or
 use the wheel; nested lists bubble wheel input at their ends. PageUp/PageDown
-move one viewport, and Home/End move to its limits, starting at the focused
+move one viewport, and Home/End move to its limits outside a text field, starting at the focused
 control's nearest scroll container and bubbling at boundaries. Tab reveals
 offscreen controls. Scroll container handles expose `scroll_to(y)`, `scroll_by(dy)`,
 `scroll_offset()`, and `scroll_extent()` for programmatic scrolling. Rows and
@@ -39,6 +40,72 @@ changes and Top/Bottom controls:
 ```sh
 c3c run --path examples/window
 ```
+
+## TextField
+
+```c3
+Widget* query = view.text_field("initial query")
+	.@on_text_change(&app, fn (a, text) { /* copy text to retain it */ });
+```
+
+`View.text_field()` and `Widget.text_field()` create an editor with owned UTF-8
+storage. Initial strings and `set_text()` arguments are copied. `get_text()`
+borrows the current string until the next change or removal. Text fields have a
+preferred width of 160 and text-height-plus-16 height; sizing constraints, root
+stretch, and clipping work as for other controls. Typing keeps the preferred width
+fixed, with horizontal scrolling to reveal the caret.
+
+`View.text_input(String)` delivers committed text independently of
+`key_down(identity, action, repeat, reverse)`. Physical keys navigate or delete;
+they never infer printable characters. A commit replaces the selection and
+collapses it after the inserted text. Invalid UTF-8, control characters, line
+separators, empty commits, and edits exceeding 4096 bytes are rejected atomically.
+`text_input()` returns whether a focused, enabled, visible field consumed the
+commit. Input flushes pending state/layout before choosing its target.
+
+`selection()` returns `{ anchor, caret }` in UTF-8 byte offsets. `select(anchor,
+caret)` rejects offsets outside the string or inside a scalar's encoding.
+Left/Right and Backspace/Delete operate on Unicode scalars; combining marks can
+be selected/deleted individually. Unshifted arrows collapse a selection to its
+corresponding edge, Shift extends from the anchor, Home/End move within the field,
+and Ctrl-A (Command-A on macOS) selects all. Mouse clicks place the caret,
+Shift-click extends from the anchor, and captured dragging extends selection,
+including outside the control. Focused selection uses inverted text and a steady
+caret. Tab reveals fields in scroll
+containers; PageUp/PageDown retain the existing scroll behavior. Enter is consumed
+without inserting a line or activating the field; Space arrives as committed text.
+
+User content changes call `TextChangeHandler(void*, String)` or the typed
+`@on_text_change(context, fn (c, text) { ... })` after updating the field. The
+callback receives an independent, borrowed snapshot valid throughout the call,
+including after reentrant `set_text()` or subtree removal. Copy it to retain it.
+Equal-content edits, selection changes, and programmatic `set_text()` are silent.
+A changed programmatic value moves the caret to its end. Fields always own their
+values: label bindings (`bind()` / `@text`) are rejected for text fields. Mirror
+application state explicitly in the change callback and programmatic setter.
+Generic `State{String}` retains its existing application-owned slice semantics.
+
+macOS uses AppKit text interpretation and committed `insertText` callbacks;
+Windows consumes `WM_CHAR` UTF-16, including surrogate pairs and repeats. Wayland
+uses xkbcommon UTF-8 and locale Compose/dead-key sequences. Native partial text
+is discarded on focus changes. X11's core adapter resolves Shift, Latin-1
+CapsLock, and Mod5's second group, then converts Latin-1/Unicode keysyms; XIM,
+Compose, and legacy non-Latin keysyms are not supported there yet. Composition
+preview is not drawn in this milestone, and Wayland text-input/IME protocols,
+clipboard commands, undo, word/grapheme navigation, and bidirectional caret
+layout remain future work.
+
+Native input references: [AppKit text interpretation](https://developer.apple.com/documentation/appkit/nsresponder/interpretkeyevents(_:)),
+[Windows character messages](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-char),
+and [xkbcommon Compose](https://xkbcommon.org/doc/current/group__compose.html).
+
+Run the complete [searchable-list example](examples/search):
+
+```sh
+c3c run --path examples/search
+```
+
+## Native backends
 
 macOS uses AppKit windows and drawing through C3's Objective-C runtime bindings.
 It links only system frameworks, with no bridge library or additional runtime

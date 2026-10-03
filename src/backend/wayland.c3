@@ -54,6 +54,8 @@ struct WaylandWindow
 	uint repeat_key;
 	long repeat_at;
 	bool repeating;
+	ulong repeat_epoch;
+	bool repeat_text;
 	fault failure;
 }
 
@@ -276,6 +278,7 @@ fn void? WaylandWindow.keymap(&self, uint format, int fd, uint size)
 {
 	defer (void)close(fd);
 	if (!self.view || !self.xkb.context) return;
+	if (self.xkb.compose_state) self.xkb.compose_reset(self.xkb.compose_state);
 	if (format == 0) // wl_keyboard.keymap_format.no_keymap
 	{
 		if (self.xkb.state) self.xkb.state_unref(self.xkb.state);
@@ -313,17 +316,44 @@ fn void WaylandWindow.key(&self, uint key, bool down, bool repeat = false)
 		if (self.repeating && self.repeat_key == key) self.repeating = false;
 		return;
 	}
+	self.view.update();
+	if (repeat && self.repeat_text && self.repeat_epoch != self.view.focus_epoch) { self.repeating = false; return; }
+	ulong epoch = self.view.focus_epoch;
+	if (self.xkb.compose_state && self.xkb.compose_epoch != epoch) self.xkb.compose_reset(self.xkb.compose_state);
 	uint sym = self.xkb.state ? self.xkb.sym(self.xkb.state, key + 8) : 0;
 	ControlKey action = keysym_control(sym);
 	bool shift = self.xkb.state && self.xkb.mod_active(self.xkb.state, "Shift", 1 << 3) > 0;
+	bool control = self.xkb.state && self.xkb.mod_active(self.xkb.state, "Control", 1 << 3) > 0;
+	bool shortcut = control || (self.xkb.state && (self.xkb.mod_active(self.xkb.state, "Mod1", 1 << 3) > 0 ||
+		self.xkb.mod_active(self.xkb.state, "Mod4", 1 << 3) > 0));
+	if (shortcut) action = control && (sym == 'a' || sym == 'A') ? SELECT_ALL : NONE;
+	if (self.view.focused && self.view.focused.kind == TEXT_FIELD && action == BACKSPACE &&
+		self.xkb.compose_state && self.xkb.compose_status(self.xkb.compose_state) == 1)
+	{
+		self.xkb.compose_reset(self.xkb.compose_state);
+		self.view.key_down((char)key, NONE, repeat, shift);
+		self.repeating = false;
+		return;
+	}
 	self.view.key_down((char)key, action, repeat, shift);
+	bool committed;
+	bool field = self.view.focused && self.view.focused.kind == TEXT_FIELD;
+	if (!shortcut && epoch == self.view.focus_epoch && field && (action == NONE || sym == 0x20))
+	{
+		committed = self.xkb.commit(self.view, key + 8, sym);
+	}
+	else if (self.xkb.compose_state) { self.xkb.compose_reset(self.xkb.compose_state); }
 	if (!repeat)
 	{
+		self.repeat_text = field && action != TAB && action != PAGE_UP && action != PAGE_DOWN;
 		self.repeating = (action == TAB || action == PAGE_UP || action == PAGE_DOWN ||
-			action == SCROLL_HOME || action == SCROLL_END) && self.repeat_rate > 0;
+			action == SCROLL_HOME || action == SCROLL_END || (field && (committed ||
+			action == LEFT || action == RIGHT || action == BACKSPACE || action == DELETE))) && self.repeat_rate > 0;
+		if (self.xkb.keymap && self.xkb.repeats && !self.xkb.repeats(self.xkb.keymap, key + 8)) self.repeating = false;
 		if (self.repeating)
 		{
 			self.repeat_key = key;
+			self.repeat_epoch = epoch;
 			self.repeat_at = wayland_time() + self.repeat_delay;
 		}
 	}
@@ -448,7 +478,8 @@ fn void? WaylandWindow.event(&self, void* target, uint opcode, WArg* args)
 				if (self.view && self.pointer_inside) self.view.pointer_move(self.pointer_x, self.pointer_y);
 			case 3: // BTN_LEFT
 				if (!self.view || !self.pointer_inside || args[2].u != 0x110) return;
-				if (args[3].u == 1) { self.view.pointer_down(self.pointer_x, self.pointer_y); }
+				if (args[3].u == 1) { self.view.pointer_down(self.pointer_x, self.pointer_y,
+					self.xkb.state && self.xkb.mod_active(self.xkb.state, "Shift", 1 << 3) > 0); }
 				else { self.view.pointer_up(self.pointer_x, self.pointer_y); }
 			case 4: // vertical axis
 				if (args[1].u == 0) self.axis_fixed = (int)math::clamp((long)self.axis_fixed + args[2].i, (long)int::min, (long)int::max);

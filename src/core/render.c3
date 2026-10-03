@@ -47,6 +47,11 @@ fn void? View.paint(&self, Renderer* renderer, Rect clip)
 			continue;
 		}
 		renderer.clip(renderer.context, widget.visible.intersect(clip))!;
+		if (widget.kind == TEXT_FIELD)
+		{
+			paint_text_field(widget, renderer, clip)!;
+			continue;
+		}
 		Rect rect = widget.bounds;
 		Ink foreground = INK;
 		int x = rect.x;

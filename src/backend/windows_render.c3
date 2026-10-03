@@ -1,5 +1,5 @@
 module ui::backend @feat(WIN32);
-import std::os::win32;
+import std::os::win32, std::math;
 
 extern fn Win32_HDC get_dc(Win32_HWND hwnd) @cname("GetDC");
 extern fn int release_dc(Win32_HWND hwnd, Win32_HDC dc) @cname("ReleaseDC");
@@ -46,7 +46,7 @@ fn Size measure_wintext(void* context, String text) @private => @pool()
 	return { text.len ? size.cx : 0, size.cy };
 }
 
-fn void? clip_winrect(void* context, Rect rect) @private
+fn void? clip_winrect(void* context, ui::Rect rect) @private
 {
 	WinCanvas* canvas = context;
 	// This resets only the application clip. BeginPaint's update region remains.
@@ -54,7 +54,7 @@ fn void? clip_winrect(void* context, Rect rect) @private
 		!intersect_clip(canvas.paint_dc, rect.x, rect.y, rect.x + rect.width, rect.y + rect.height)) return ui::PLATFORM_ERROR~;
 }
 
-fn void? fill_winrect(void* context, Rect rect, Ink ink) @private
+fn void? fill_winrect(void* context, ui::Rect rect, Ink ink) @private
 {
 	if (rect.empty()) return;
 	WinCanvas* canvas = context;
@@ -75,7 +75,7 @@ fn void? draw_wintext(void* context, String text, int x, int y, Ink ink) @privat
 fn void flush_window(WinWindow* window) @private
 {
 	window.view.update();
-	Rect damage = window.view.take_damage();
+	ui::Rect damage = window.view.take_damage();
 	if (!damage.empty())
 	{
 		Win32_RECT rect = { damage.x, damage.y, damage.x + damage.width, damage.y + damage.height };
@@ -91,7 +91,8 @@ fn void flush_window(WinWindow* window) @private
 
 // Kept separate from painting so native message metadata can be tested without
 // an HWND. A repeated message can arrive without a prior down after refocus.
-fn void win_key(View* view, bool down, uint key, sz flags, bool shift) @private
+fn void win_key(View* view, bool down, uint key, sz flags, bool shift,
+	bool control = false, bool alt = false) @private
 {
 	if (key >= 256) return;
 	if (!down) { view.key_up((char)key); return; }
@@ -105,9 +106,39 @@ fn void win_key(View* view, bool down, uint key, sz flags, bool shift) @private
 		case 34: action = PAGE_DOWN;
 		case 36: action = SCROLL_HOME;
 		case 35: action = SCROLL_END;
+		case 37: action = LEFT;
+		case 39: action = RIGHT;
+		case 8: action = BACKSPACE;
+		case 46: action = DELETE;
 		default:
 	}
+	if (control || alt) action = control && !alt && key == 65 ? SELECT_ALL : NONE;
 	view.key_down((char)key, action, (flags & (1 << 30)) != 0, shift);
+}
+
+// WM_CHAR contains committed UTF-16, independently of WM_KEYDOWN. Preserve a
+// surrogate only within the same focus lifetime and reject malformed pairs.
+fn void win_char(WinWindow* window, uint unit, uint count = 1) @private => @pool()
+{
+	View* view = window.view;
+	view.update();
+	if (window.text_epoch != view.focus_epoch) window.text_surrogate = 0;
+	window.text_epoch = view.focus_epoch;
+	if (unit >= 0xd800 && unit <= 0xdbff) { window.text_surrogate = (ushort)unit; return; }
+	uint code = unit;
+	if (unit >= 0xdc00 && unit <= 0xdfff)
+	{
+		if (!window.text_surrogate) return;
+		code = 0x10000 + ((uint)window.text_surrogate - 0xd800) * 0x400 + unit - 0xdc00;
+	}
+	window.text_surrogate = 0;
+	if (code > 0x10ffff) return;
+	Char32[1] chars = { code };
+	String text = string::from_utf32(tmem, chars[..])!!;
+	for (uint i = 0; i < math::max(1u, count); i++)
+	{
+		if (!view.text_input(text) || window.text_epoch != view.focus_epoch) break;
+	}
 }
 
 // Wheel deltas are signed multiples/fractions of 120. Keep the fractional
@@ -122,15 +153,15 @@ fn void win_wheel(View* view, int* remainder, int x, int y, short delta) @privat
 
 // Separate pointer metadata from HWND operations so cancellation and signed
 // captured coordinates are exercised by both native dispatch and unit tests.
-fn void win_pointer(View* view, uint message, int x = 0, int y = 0) @private
+fn void win_pointer(View* view, uint message, int x = 0, int y = 0, bool extend = false) @private
 {
 	switch (message)
 	{
-		case 0x201: view.pointer_down(x, y);
+		case 0x201: view.pointer_down(x, y, extend);
 		case 0x202: view.pointer_up(x, y);
 		case 0x200: view.pointer_move(x, y);
 		case 0x2a3: // Leave is not captured motion; do not move an active thumb.
-			if (!view.scroll_pressed) view.pointer_move(-1, -1);
+			if (!view.has_pointer_capture()) view.pointer_move(-1, -1);
 		case 0x215: // Capture loss and cancel mode preserve the press identity.
 		case 0x1f:
 			view.cancel_press();
@@ -171,7 +202,7 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 		case 0x201: // WM_LBUTTONDOWN
 			(void)set_focus(hwnd);
 			(void)set_capture(hwnd);
-			win_pointer(view, message, x, y);
+			win_pointer(view, message, x, y, get_key_state(16) < 0);
 		case 0x202:
 			win_pointer(view, message, x, y);
 			(void)release_capture();
@@ -200,7 +231,10 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 			view.held_keys[13] = get_key_state(13) < 0;
 			view.held_keys[32] = get_key_state(32) < 0;
 		case 0x100: // WM_KEYDOWN; bit 30 survives even a lost initial press.
-			win_key(view, true, (uint)wparam, lparam, get_key_state(16) < 0);
+			win_key(view, true, (uint)wparam, lparam, get_key_state(16) < 0,
+				get_key_state(17) < 0, get_key_state(18) < 0);
+		case 0x102: // WM_CHAR (TranslateMessage handles keyboard layouts/dead keys).
+			win_char(window, (uint)wparam, (uint)(lparam & 0xffff));
 		case 0x101: // WM_KEYUP
 			win_key(view, false, (uint)wparam, lparam, false);
 		case 0x105: // WM_SYSKEYUP: Alt pressed during a hold can change release type.

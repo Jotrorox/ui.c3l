@@ -1,8 +1,11 @@
 module ui;
 
-enum WidgetKind { TEXT, BUTTON, ROW, COLUMN, CHECKBOX, SCROLL_COLUMN }
+enum WidgetKind { TEXT, BUTTON, ROW, COLUMN, CHECKBOX, SCROLL_COLUMN, TEXT_FIELD }
 alias ClickHandler = fn void(void* context);
 alias CheckHandler = fn void(void* context, bool checked);
+// The text is a borrowed snapshot valid throughout this callback, even if the
+// handler changes/removes the field. Copy it to retain it in application state.
+alias TextChangeHandler = fn void(void* context, String text);
 
 // Handles stay at the same address until remove() or View.free(). All storage,
 // including copied labels and dependency edges, is owned by the View. Tree,
@@ -37,6 +40,10 @@ struct Widget
 	void* click_context;
 	CheckHandler on_change;
 	void* change_context;
+	TextChangeHandler on_text_change;
+	void* text_change_context;
+	TextSelection text_selection; // UTF-8 byte offsets at Unicode scalar boundaries.
+	int text_scroll_x;
 	bool disabled;
 	bool hidden; // local collapse flag; visible above is clipped geometry
 	bool checked;
@@ -199,6 +206,7 @@ fn Widget* Widget.scroll_column(&self, Layout layout = {}) => add_container(self
 fn void assign_text(Widget* self, String text) @private
 {
 	assert(!self.is_container(), "Only leaf widgets have labels");
+	if (self.kind == TEXT_FIELD) assert(valid_field_text(text), "TextFields need single-line UTF-8, at most 4096 bytes");
 	if (self.content == text) return;
 	assert(text.len <= 4096, "Widget labels are limited to 4096 UTF-8 bytes");
 	@pool()
@@ -209,6 +217,7 @@ fn void assign_text(Widget* self, String text) @private
 	String copy = text.copy(mem);
 	self.content.free(mem);
 	self.content = copy;
+	if (self.kind == TEXT_FIELD) self.text_selection = { text.len, text.len };
 	self.request_measure();
 	self.owner.invalidate(self.visible);
 }
@@ -220,6 +229,7 @@ fn void Widget.set_text(&self, String text)
 	assign_text(self, text);
 }
 
+// Borrowed until the next text change or removal; copy before retaining it.
 fn String Widget.get_text(&self) => self.content;
 
 fn bool Widget.is_enabled(&self)
@@ -229,7 +239,7 @@ fn bool Widget.is_enabled(&self)
 }
 
 fn bool Widget.interactive(&self) =>
-	(self.kind == BUTTON || self.kind == CHECKBOX) && self.is_enabled() &&
+	(self.kind == BUTTON || self.kind == CHECKBOX || self.kind == TEXT_FIELD) && self.is_enabled() &&
 	self.is_visible() && !self.visible.empty();
 
 fn void Widget.set_enabled(&self, bool enabled)
@@ -324,7 +334,7 @@ fn void Widget.remove(&self)
 	while (self.first) self.first.remove();
 	dispose_bindings(self);
 	View* view = self.owner;
-	if (view.focused == self) view.focused = null;
+	if (view.focused == self) { view.focused = null; view.focus_epoch++; }
 	if (view.hovered == self) view.hovered = null;
 	if (view.pressed == self) view.pressed = null;
 	unlink_widget(self);
@@ -363,6 +373,7 @@ fn void View.reconcile_input(&self)
 	{
 		self.invalidate(self.focused.visible);
 		self.focused = null;
+		self.focus_epoch++;
 	}
 	if (self.pressed && !self.pressed.interactive()) self.cancel_press();
 	Widget* hit = self.pointer_known && !self.scroll_pressed ? self.hit_test_current(self.pointer_x, self.pointer_y) : null;
@@ -379,9 +390,18 @@ fn void View.pointer_move(&self, int x, int y)
 	self.pointer_known = true;
 	self.update();
 	self.move_scrollbar(y);
+	if (self.pressed && self.pressed.kind == TEXT_FIELD)
+	{
+		self.pressed.select(self.pressed.text_selection.anchor, self.pressed.text_position_at(x));
+	}
 }
 
-fn void View.pointer_down(&self, int x, int y)
+// Crossing notifications are not captured drag motion. Keep the last pointer
+// position for a text selection or scrollbar until a real motion/up arrives.
+fn bool View.has_pointer_capture(&self) => self.scroll_pressed != null ||
+	(self.pressed && self.pressed.kind == TEXT_FIELD);
+
+fn void View.pointer_down(&self, int x, int y, bool extend = false)
 {
 	self.cancel_press();
 	self.scroll_press_active = false;
@@ -389,8 +409,14 @@ fn void View.pointer_down(&self, int x, int y)
 	self.keyboard_scroll = scroll_viewport_at(self, x, y);
 	if (self.press_scrollbar(x, y)) return;
 	if (self.focused) self.invalidate(self.focused.visible);
+	if (self.focused != self.hovered) self.focus_epoch++;
 	self.focused = self.hovered;
 	self.pressed = self.hovered;
+	if (self.focused && self.focused.kind == TEXT_FIELD)
+	{
+		sz position = self.focused.text_position_at(x);
+		self.focused.select(extend ? self.focused.text_selection.anchor : position, position);
+	}
 	if (self.pressed) self.invalidate(self.pressed.visible);
 }
 
@@ -451,14 +477,17 @@ fn void View.focus_next(&self, bool reverse = false)
 		reveal_candidate(target, true);
 		self.update();
 	}
-	self.focused = target && target.interactive() ? target : null;
+	Widget* focused = target && target.interactive() ? target : null;
+	if (self.focused != focused) self.focus_epoch++;
+	self.focused = focused;
 	if (self.focused) self.invalidate(self.focused.visible);
 }
 
 // Native adapters supply an identity and repeat metadata. Keep held keys across
-// widget focus changes/removal: a repeat must never target a replacement widget.
-// Tab and scrolling repeat deliberately; activation occurs only on initial down.
-enum ControlKey { NONE, TAB, ACTIVATE, PAGE_UP, PAGE_DOWN, SCROLL_HOME, SCROLL_END }
+// widget focus changes/removal: held activation cannot target a replacement.
+// Tab, scrolling and editing repeat deliberately; activation is initial-down only.
+enum ControlKey { NONE, TAB, ACTIVATE, PAGE_UP, PAGE_DOWN, SCROLL_HOME, SCROLL_END,
+	LEFT, RIGHT, BACKSPACE, DELETE, SELECT_ALL }
 
 fn void View.key_down(&self, char identity, ControlKey action, bool repeat = false, bool reverse = false)
 {
@@ -466,6 +495,7 @@ fn void View.key_down(&self, char identity, ControlKey action, bool repeat = fal
 	self.update();
 	bool held = self.held_keys[identity];
 	self.held_keys[identity] = true; // Set before callbacks, including self-removal.
+	if (self.focused && self.focused.kind == TEXT_FIELD && field_key(self.focused, action, reverse)) return;
 	if (action == TAB) self.focus_next(reverse);
 	if (action == ACTIVATE && !held && !repeat) self.activate_focused();
 	if (action == PAGE_UP || action == PAGE_DOWN || action == SCROLL_HOME || action == SCROLL_END)
@@ -485,11 +515,12 @@ fn void View.activate_focused(&self)
 	self.update();
 	Widget* widget = self.focused;
 	// Both Space and Enter activate Buttons and toggle Checkboxes.
-	if (widget && widget.interactive()) activate_widget(widget);
+	if (widget && widget.interactive() && widget.kind != TEXT_FIELD) activate_widget(widget);
 }
 
 fn void View.blur(&self)
 {
+	self.focus_epoch++;
 	self.cancel_press();
 	self.scroll_press_active = false;
 	self.held_keys = {};

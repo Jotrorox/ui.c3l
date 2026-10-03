@@ -44,7 +44,9 @@ jobs:
       - name: C3 tests (Intel binaries run under Rosetta)
         run: c3c test --target "${{ matrix.target }}" --linker=cc ${{ matrix.flags }} --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
       - name: Example build
-        run: c3c build --path examples/window --target "${{ matrix.target }}" --linker=cc ${{ matrix.flags }}
+        run: |
+          c3c build --path examples/window --target "${{ matrix.target }}" --linker=cc ${{ matrix.flags }}
+          c3c build --path examples/search --target "${{ matrix.target }}" --linker=cc ${{ matrix.flags }}
   linux:
     name: Linux (${{ matrix.arch }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.runner }}
@@ -115,7 +117,9 @@ jobs:
           c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} "${test_flags[@]}" --suppress-run --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
           timeout 120s "$RUNNER_TEMP/ui-tests/testrun"
       - name: Example build
-        run: c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
+        run: |
+          c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
+          c3c build --path examples/search --target "${{ matrix.target }}" ${{ matrix.flags }}
       - name: Simulated X11 tests (no desktop)
         run: python3 -m unittest discover -s tests -p test_x11.py -v
       - name: Wayland protocol, rendering, input, and selection tests
@@ -175,6 +179,8 @@ jobs:
       - name: C3 tests
         run: c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} --build-dir "$env:RUNNER_TEMP/ui-tests" --output-dir "$env:RUNNER_TEMP/ui-tests"
       - name: Example build
-        run: c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
+        run: |
+          c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
+          c3c build --path examples/search --target "${{ matrix.target }}" ${{ matrix.flags }}
       - name: Native desktop tests when an input desktop is available
         run: python scripts/test-windows.py
