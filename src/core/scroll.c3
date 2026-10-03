@@ -166,6 +166,56 @@ fn bool Widget.scroll_by(&self, int delta)
 	return true;
 }
 
+// Clicks and wheels select the deepest enabled, visible viewport, padding included.
+fn Widget* scroll_viewport_at(View* self, int x, int y) @private
+{
+	Widget* target;
+	int depth = -1;
+	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
+	{
+		if (widget.kind != SCROLL_COLUMN || !widget.is_visible() || !widget.is_enabled() ||
+			!widget.visible.contains(x, y)) continue;
+		int candidate_depth;
+		for (Widget* node = widget.parent; node; node = node.parent) candidate_depth++;
+		if (candidate_depth > depth) { target = widget; depth = candidate_depth; }
+	}
+	return target;
+}
+
+// Focus selects its nearest scroll ancestor. With no focused control, use the
+// last keyboard receiver or clicked viewport. Boundary keys bubble only along
+// that ancestry; one viewport consumes each event, with no forwarded remainder.
+fn void scroll_key(View* self, ControlKey action) @private
+{
+	Widget* target = self.keyboard_scroll;
+	if (self.focused)
+	{
+		target = self.focused.parent;
+		while (target && target.kind != SCROLL_COLUMN) target = target.parent;
+	}
+	for (Widget* node = target; node; node = node.parent)
+	{
+		if (node.kind != SCROLL_COLUMN || !node.is_enabled() ||
+			!node.is_visible() || node.visible.empty()) continue;
+		long offset = node.scroll_y;
+		switch (action)
+		{
+			case PAGE_UP: offset -= node.content_rect().height;
+			case PAGE_DOWN: offset += node.content_rect().height;
+			case SCROLL_HOME: offset = 0;
+			case SCROLL_END: offset = node.scroll_max;
+			default: return;
+		}
+		int next = (int)math::clamp(offset, 0L, (long)node.scroll_max);
+		if (next == node.scroll_y) continue;
+		self.keyboard_scroll = node;
+		self.cancel_scrollbar();
+		set_scroll_offset(node, next);
+		self.update();
+		return;
+	}
+}
+
 // Pointer routing starts at the deepest viewport under the pointer (padding
 // included). Only that viewport's ancestors may receive a boundary event.
 // One viewport consumes the entire event; an unused remainder never bubbles.
@@ -179,16 +229,7 @@ fn bool View.scroll_wheel(&self, int x, int y, int delta)
 	self.pointer_known = true;
 	self.update();
 	if (!delta) return false;
-	Widget* target;
-	int depth = -1;
-	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
-	{
-		if (widget.kind != SCROLL_COLUMN || !widget.is_visible() || !widget.is_enabled() ||
-			!widget.visible.contains(x, y)) continue;
-		int candidate_depth;
-		for (Widget* node = widget.parent; node; node = node.parent) candidate_depth++;
-		if (candidate_depth > depth) { target = widget; depth = candidate_depth; }
-	}
+	Widget* target = scroll_viewport_at(self, x, y);
 	for (Widget* node = target; node; node = node.parent)
 	{
 		if (node.kind != SCROLL_COLUMN || !node.is_enabled()) continue;

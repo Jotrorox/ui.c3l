@@ -5,7 +5,10 @@ Drag a thumb, click above or below it to move one page, or scroll with the mouse
 wheel. Dragging continues outside the window until release. **Tab** /
 **Shift+Tab** reveals and focuses offscreen controls. The nested list consumes
 wheel input until it reaches the requested end; the next wheel event can move
-the outer list. **Enter** / **Space** activates a focused control.
+the outer list. **PageUp** / **PageDown** scroll one viewport; **Home** / **End**
+scroll to its top/bottom. These keys start at the focused control's nearest
+scroll container and bubble at boundaries. **Enter** / **Space** activates a
+focused control.
 
 The toolbar is a content-sized column above the list and keeps its natural
 height when the window resizes. The outer list alone uses `fill = true`, so its
@@ -603,6 +606,25 @@ than the available height aligns its top when chosen by traversal. Ordinary
 ancestor clips still apply: a control that remains fully clipped by a non-scrolling ancestor,
 or has no visible width or height after revealing, is skipped. Scrolling does
 not make hidden or disabled controls eligible.
+
+PageUp/PageDown move by the receiving scroll column's content height (excluding
+padding), clamped to its extent. Home/End move to zero/the maximum offset.
+Routing starts at the focused control's nearest scroll ancestor. If that
+container cannot move in the requested direction, try its scroll ancestors,
+using each ancestor's own page height or limit. One container consumes each
+event; a partially used page never forwards its remainder, and siblings and
+the implicit root never receive it. These keys repeat intentionally.
+
+Scrolling retains focus while a control is partly visible and clears it when
+fully clipped; it never assigns replacement focus or automatically reveals the
+old control. With no focused control, keyboard scrolling continues from the
+last container that consumed a scroll key, or the deepest enabled, visible
+viewport selected by a click (including padding and scrollbar). Hover alone
+does not select one. Tab traversal and clicks reset this remembered receiver;
+focus outside a scroll subtree receives no scroll action. Blur, receiver or
+ancestor removal/reparenting, hiding, disabling, or full viewport clipping clear
+the receiver. Offset changes cancel stale widget presses and scrollbar drags;
+boundary no-ops preserve them. Held activation keys remain held after scrolling.
 
 **Tab repeats intentionally**, including while an activation key remains held.
 `view.activate_focused()` is an explicit programmatic action: each call can

@@ -12,6 +12,37 @@ fn void xkey(XCanvas* canvas, View* view, uint kind, char code, uint time, bool 
 	canvas.event(view, event[..])!!;
 }
 
+fn void x11_scroll_keys_repeat_pairs_and_keypad_navigation() @test
+{
+	uint[8] symbols = { 0xff56, 0xff55, 0xff57, 0xff50, 0xff9b, 0xff9a, 0xff9c, 0xff95 };
+	char[32] keys;
+	foreach (i, symbol : symbols) write32(keys[..], i * 4, symbol);
+	XCanvas canvas = { .setup = { .window = 77, .min_keycode = 20, .max_keycode = 27 },
+		.keymap = keys[..], .keysyms_per_key = 1 };
+	View view;
+	defer view.free();
+	view.resize(300, 200);
+	Widget* panel = view.scroll_column({ .width = 100, .height = 50 });
+	panel.button("tall").set_layout({ .height = 240 });
+	view.focus_next();
+	for (char base = 20; base <= 24; base += 4)
+	{
+		xkey(&canvas, &view, 2, base, 100);
+		test::eq(panel.scroll_offset(), 50);
+		xkey(&canvas, &view, 3, base, 110);
+		xkey(&canvas, &view, 2, base, 110); // Core autorepeat still scrolls.
+		test::eq(panel.scroll_offset(), 100);
+		xkey(&canvas, &view, 3, base, 120);
+		test::eq(view.held_keys[base], false);
+		xkey(&canvas, &view, 2, base + 1, 130);
+		test::eq(panel.scroll_offset(), 50);
+		xkey(&canvas, &view, 2, base + 2, 140);
+		test::eq(panel.scroll_offset(), 190);
+		xkey(&canvas, &view, 2, base + 3, 150);
+		test::eq(panel.scroll_offset(), 0);
+	}
+}
+
 fn void x11_repeat_pairs_real_cycles_focus_and_mapping_identity() @test
 {
 	char[16] keys;
