@@ -65,6 +65,9 @@ fn int main()
 	Widget* panel = state.view.column({ .width = 260, .height = 170, .padding = 6, .gap = 8 });
 	Widget* row = panel.row({ .gap = 10 });
 	state.inspect = row.button("Inspect", &inspect, &state);
+	// Keep the adjacent action beyond Win32's default minimum client width so
+	// the native resize test can fully clip it without the OS clamping the size.
+	state.inspect.set_layout({ .width = 140 });
 	state.branch = row.column({ .gap = 4 });
 	state.action = state.branch.button("Increment", &increment, &state);
 	state.label = state.branch.text();
