@@ -68,6 +68,10 @@ fn void unlink_widget(Widget* self) @private
 {
 	View* view = self.owner;
 	view.cancel_scrollbar_subtree(self);
+	for (Widget* node = view.keyboard_scroll; node; node = node.parent)
+	{
+		if (node == self) { view.keyboard_scroll = null; break; }
+	}
 	// Reparenting can change inherited enabled state without changing geometry.
 	view.invalidate(self.visible);
 	if (self.previous) { self.previous.next = self.next; }
@@ -345,6 +349,11 @@ fn Widget* View.hit_test(&self, int x, int y)
 
 fn void View.reconcile_input(&self)
 {
+	if (self.keyboard_scroll && (!self.keyboard_scroll.is_enabled() ||
+		!self.keyboard_scroll.is_visible() || self.keyboard_scroll.visible.empty()))
+	{
+		self.keyboard_scroll = null;
+	}
 	if (self.scroll_pressed && (!self.scroll_pressed.is_enabled() ||
 		!self.scroll_pressed.is_visible() || self.scroll_pressed.scroll_track.intersect(self.scroll_pressed.visible).empty()))
 	{
@@ -377,6 +386,7 @@ fn void View.pointer_down(&self, int x, int y)
 	self.cancel_press();
 	self.scroll_press_active = false;
 	self.pointer_move(x, y);
+	self.keyboard_scroll = scroll_viewport_at(self, x, y);
 	if (self.press_scrollbar(x, y)) return;
 	if (self.focused) self.invalidate(self.focused.visible);
 	self.focused = self.hovered;
@@ -419,6 +429,7 @@ fn void View.focus_next(&self, bool reverse = false)
 {
 	self.update();
 	self.cancel_press();
+	self.keyboard_scroll = null;
 	Widget* first;
 	Widget* last;
 	Widget* previous;
@@ -446,8 +457,8 @@ fn void View.focus_next(&self, bool reverse = false)
 
 // Native adapters supply an identity and repeat metadata. Keep held keys across
 // widget focus changes/removal: a repeat must never target a replacement widget.
-// Tab repeats deliberately; activation occurs only on the initial key-down.
-enum ControlKey { NONE, TAB, ACTIVATE }
+// Tab and scrolling repeat deliberately; activation occurs only on initial down.
+enum ControlKey { NONE, TAB, ACTIVATE, PAGE_UP, PAGE_DOWN, SCROLL_HOME, SCROLL_END }
 
 fn void View.key_down(&self, char identity, ControlKey action, bool repeat = false, bool reverse = false)
 {
@@ -457,6 +468,10 @@ fn void View.key_down(&self, char identity, ControlKey action, bool repeat = fal
 	self.held_keys[identity] = true; // Set before callbacks, including self-removal.
 	if (action == TAB) self.focus_next(reverse);
 	if (action == ACTIVATE && !held && !repeat) self.activate_focused();
+	if (action == PAGE_UP || action == PAGE_DOWN || action == SCROLL_HOME || action == SCROLL_END)
+	{
+		scroll_key(self, action);
+	}
 }
 
 fn void View.key_up(&self, char identity)
@@ -483,4 +498,5 @@ fn void View.blur(&self)
 	self.hovered = null;
 	if (self.focused) self.invalidate(self.focused.visible);
 	self.focused = null;
+	self.keyboard_scroll = null;
 }

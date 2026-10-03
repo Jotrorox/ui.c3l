@@ -3,6 +3,28 @@ import std::os::env;
 
 enum LinuxBackend { AUTO, X11, WAYLAND }
 
+// X11 and xkbcommon use the same control keysyms, including keypad navigation.
+fn ControlKey keysym_control(uint symbol) @private
+{
+	switch (symbol)
+	{
+		case 0xff09:
+		case 0xfe20: return TAB;
+		case 0xff0d:
+		case 0xff8d:
+		case 0x20: return ACTIVATE;
+		case 0xff55:
+		case 0xff9a: return PAGE_UP;
+		case 0xff56:
+		case 0xff9b: return PAGE_DOWN;
+		case 0xff50:
+		case 0xff95: return SCROLL_HOME;
+		case 0xff57:
+		case 0xff9c: return SCROLL_END;
+		default: return NONE;
+	}
+}
+
 fn LinuxBackend? linux_backend(String override) @private
 {
 	if (!override.len || override == "auto") return AUTO;

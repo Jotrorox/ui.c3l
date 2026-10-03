@@ -95,8 +95,19 @@ fn void win_key(View* view, bool down, uint key, sz flags, bool shift) @private
 {
 	if (key >= 256) return;
 	if (!down) { view.key_up((char)key); return; }
-	view.key_down((char)key, key == 9 ? TAB : (key == 13 || key == 32 ? ACTIVATE : NONE),
-		(flags & (1 << 30)) != 0, shift);
+	ControlKey action = NONE;
+	switch (key)
+	{
+		case 9: action = TAB;
+		case 13:
+		case 32: action = ACTIVATE;
+		case 33: action = PAGE_UP;
+		case 34: action = PAGE_DOWN;
+		case 36: action = SCROLL_HOME;
+		case 35: action = SCROLL_END;
+		default:
+	}
+	view.key_down((char)key, action, (flags & (1 << 30)) != 0, shift);
 }
 
 // Wheel deltas are signed multiples/fractions of 120. Keep the fractional

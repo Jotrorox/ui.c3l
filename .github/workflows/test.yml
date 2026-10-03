@@ -106,7 +106,14 @@ jobs:
       - name: Show compiler version and native target
         run: c3c --version
       - name: C3 tests
-        run: c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
+        run: |
+          test_flags=()
+          if [ "${{ matrix.arch }}:${{ matrix.profile }}" = "arm64:release" ]; then
+            # C3 0.8.4/LLVM 19 corrupts the test allocator in a merged ARM64 module.
+            test_flags+=(--single-module=no)
+          fi
+          c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} "${test_flags[@]}" --suppress-run --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
+          timeout 120s "$RUNNER_TEMP/ui-tests/testrun"
       - name: Example build
         run: c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
       - name: Simulated X11 tests (no desktop)
