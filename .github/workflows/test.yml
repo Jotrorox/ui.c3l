@@ -80,7 +80,7 @@ jobs:
           python-version: '3.13'
           architecture: ${{ matrix.arch }}
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base libx11-6 libxtst6 weston libwayland-client0 libcairo2 libxkbcommon0 xkb-data
+        run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base libx11-6 libxtst6 weston libwayland-client0 libcairo2 libxkbcommon0 xkb-data gdb
       - name: Set up C3 0.8.4 (x64)
         if: matrix.arch == 'x64'
         uses: Jotrorox/setup-c3@c96f205c661bcdd77d83c6e46dabcc0c17931f98 # v1
@@ -106,7 +106,13 @@ jobs:
       - name: Show compiler version and native target
         run: c3c --version
       - name: C3 tests
-        run: c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
+        run: |
+          c3c test --target "${{ matrix.target }}" ${{ matrix.flags }} --suppress-run --build-dir "$RUNNER_TEMP/ui-tests" --output-dir "$RUNNER_TEMP/ui-tests"
+          if [ "${{ matrix.arch }}:${{ matrix.profile }}" = "arm64:release" ]; then
+            timeout 120s gdb --batch --return-child-result -ex run -ex 'thread apply all bt' --args "$RUNNER_TEMP/ui-tests/testrun"
+          else
+            timeout 120s "$RUNNER_TEMP/ui-tests/testrun"
+          fi
       - name: Example build
         run: c3c build --path examples/window --target "${{ matrix.target }}" ${{ matrix.flags }}
       - name: Simulated X11 tests (no desktop)
