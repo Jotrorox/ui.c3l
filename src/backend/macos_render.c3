@@ -9,14 +9,18 @@ extern void* mac_color_attribute @cname("NSForegroundColorAttributeName");
 
 alias MacStringInit = fn void*(void*, ObjcSelector, void*, usz, ulong);
 alias MacFont = fn void*(void*, ObjcSelector, double);
+alias MacColor = fn void*(void*, ObjcSelector, double, double, double, double);
 alias MacDictionary = fn void*(void*, ObjcSelector, void**, void**, usz);
 alias MacTextSize = fn CGSize(void*, ObjcSelector, void*);
 alias MacTextDraw = fn void(void*, ObjcSelector, CGPoint, void*);
 
 struct MacCanvas
 {
-	void*[2] colors;
-	void*[2] attributes;
+	void*[ui::INK_COUNT] colors;
+	void*[ui::INK_COUNT] attributes;
+	View* view;
+	Theme theme;
+	ulong theme_epoch;
 	fault failure;
 }
 
@@ -24,33 +28,51 @@ fn void* mac_string(String text) @private =>
 	objc::msg_send(objc::alloc(objc::getClass("NSString")), MacStringInit,
 		"initWithBytes:length:encoding:", text.ptr, (usz)text.len, 4UL); // NSUTF8StringEncoding
 
-fn void? MacCanvas.init(&self)
+fn void? MacCanvas.init(&self, Theme theme = ui::DEFAULT_THEME)
 {
-	void* font = objc::msg_send(objc::getClass("NSFont"), MacFont, "systemFontOfSize:", 13.0);
-	self.colors = {
-		objc::msg_send(objc::getClass("NSColor"), MacObject, "whiteColor"),
-		objc::msg_send(objc::getClass("NSColor"), MacObject, "blackColor")
-	};
-	if (!font || !self.colors[0] || !self.colors[1]) return ui::PLATFORM_ERROR~;
+	void* font = objc::msg_send(objc::getClass("NSFont"), MacFont, "systemFontOfSize:", (double)theme.font_size);
+	if (!font) return ui::PLATFORM_ERROR~;
+	void*[ui::INK_COUNT] colors;
+	void*[ui::INK_COUNT] attributes;
+	defer catch { foreach (value : attributes) if (value) objc::release(value); }
 	void*[2] keys = { mac_font_attribute, mac_color_attribute };
-	for (usz index = 0; index < 2; index++)
+	for (usz index = 0; index < ui::INK_COUNT; index++)
 	{
-		void*[2] values = { font, self.colors[index] };
-		self.attributes[index] = objc::msg_send(objc::alloc(objc::getClass("NSDictionary")), MacDictionary,
+		Color color = theme.colors[index];
+		colors[index] = objc::msg_send(objc::getClass("NSColor"), MacColor,
+			"colorWithSRGBRed:green:blue:alpha:", color.red / 255.0, color.green / 255.0, color.blue / 255.0, 1.0);
+		if (!colors[index]) return ui::PLATFORM_ERROR~;
+		void*[2] values = { font, colors[index] };
+		attributes[index] = objc::msg_send(objc::alloc(objc::getClass("NSDictionary")), MacDictionary,
 			"initWithObjects:forKeys:count:", &values[0], &keys[0], (usz)2);
-		if (!self.attributes[index]) { self.dispose(); return ui::PLATFORM_ERROR~; }
+		if (!attributes[index]) return ui::PLATFORM_ERROR~;
 	}
+	self.dispose();
+	self.colors = colors;
+	self.attributes = attributes;
+	self.theme = theme;
+	self.theme_epoch = ulong::max; // Verify the owner's theme on first use.
+}
+
+fn void? MacCanvas.sync_theme(&self)
+{
+	if (self.view && self.attributes[0] && self.theme_epoch == self.view.theme_epoch) return;
+	Theme theme = self.view ? self.view.get_theme() : ui::DEFAULT_THEME;
+	if (!self.attributes[0] || self.theme.font_size != theme.font_size || !self.theme.same_colors(theme)) self.init(theme)!;
+	self.theme_epoch = self.view ? self.view.theme_epoch : 0;
 }
 
 fn void MacCanvas.dispose(&self)
 {
 	foreach (attributes : self.attributes) if (attributes) objc::release(attributes);
 	self.attributes = {};
+	self.colors = {};
 }
 
 fn Size measure_mactext(void* context, String text) @private
 {
 	MacCanvas* canvas = context;
+	if (catch failure = canvas.sync_theme()) { canvas.failure = failure; return {}; }
 	void* native = mac_string(text.len ? text : "M");
 	if (!native) { canvas.failure = ui::PLATFORM_ERROR; return {}; }
 	defer objc::release(native);
@@ -71,6 +93,7 @@ fn void? fill_macrect(void* context, ui::Rect rect, Ink ink) @private
 {
 	if (rect.empty()) return;
 	MacCanvas* canvas = context;
+	canvas.sync_theme()!;
 	objc::msg_send(canvas.colors[ink], MacVoid, "setFill");
 	fill_mac_rect(mac_rect(rect));
 }
@@ -79,6 +102,7 @@ fn void? draw_mactext(void* context, String text, int x, int y, Ink ink) @privat
 {
 	if (!text.len) return;
 	MacCanvas* canvas = context;
+	canvas.sync_theme()!;
 	void* native = mac_string(text);
 	if (!native) return ui::PLATFORM_ERROR~;
 	defer objc::release(native);
@@ -96,6 +120,7 @@ fn void draw_mac_view(void* object, ObjcSelector selector, CGRect dirty) @privat
 		return;
 	}
 	mac_resize(object, selector, null);
+	window.canvas.view = window.view;
 	window.view.update();
 	int x = (int)math::floor(dirty.origin.x);
 	int y = (int)math::floor(dirty.origin.y);

@@ -41,6 +41,62 @@ changes and Top/Bottom controls:
 c3c run --path examples/window
 ```
 
+## Theme and style
+
+Each view starts with `DEFAULT_THEME`. Copy it (or call `get_theme()`), edit the
+palette and metrics, then apply it before opening or from an event callback:
+
+```c3
+Theme theme = view.get_theme();
+theme.colors[Ink.PAPER] = { 24, 28, 36 }; // Window background, opaque sRGB.
+theme.colors[Ink.INK] = { 235, 239, 245 }; // Text and checked marks.
+theme.colors[Ink.SURFACE] = { 40, 46, 58 };
+theme.colors[Ink.HOVER] = { 54, 62, 76 };
+theme.colors[Ink.BORDER] = { 105, 117, 138 };
+theme.colors[Ink.FOCUS] = { 100, 180, 255 };
+theme.font_size = 18;
+theme.padding = 20;
+theme.gap = 10;
+theme.control_padding_x = 14;
+theme.control_padding_y = 10;
+bool applied = view.set_theme(theme);
+```
+
+`set_theme()` validates atomically and returns `false` for invalid metrics.
+Font sizes range from 1 to 256 pixels (logical points on macOS). Root padding
+and gaps range from 0 to 65535; control padding ranges from 0 to 32767.
+`get_theme()` returns a copy. Palette-only changes repaint without remeasuring
+text; equal assignments do nothing. Font changes refresh text, caret, and layout
+metrics, including hidden content when it is restored. Each view owns its theme.
+
+| Palette role | Use |
+| --- | --- |
+| `PAPER`, `INK` | Window background; text, checked marks, caret, and scrollbar thumb |
+| `SURFACE`, `BORDER` | Control/track background and outline |
+| `HOVER` | Enabled Button/Checkbox hover background |
+| `PRESSED`, `PRESSED_TEXT` | Pressed background and contrasting text/mark |
+| `DISABLED`, `DISABLED_SURFACE` | Inherited disabled text/outline/mark and background |
+| `FOCUS` | Keyboard focus ring, distinct from hover |
+| `SELECTION`, `SELECTION_TEXT` | Focused TextField selection and its text |
+
+The default font size is 14, with root padding 16, gap 8, and Button padding
+12 horizontally and 8 vertically. TextFields use `control_padding_y` on all
+sides; Checkboxes use half that padding and `gap` between the box and label.
+Checkbox size, preferred TextField width, scrollbar width, and minimum thumb
+length scale with font size. Explicit `Layout` sizing and container spacing
+remain authoritative. `set_root_spacing()` pins an explicit root override,
+including when called with the defaults.
+
+Native backends use their system font families at the requested size. X11 asks
+for a core fixed font at that pixel size and falls back to the server's `fixed`
+font when the requested strike is unavailable; layout uses the actual metrics.
+X11 allocates palette colors through the server colormap. Its font selection
+follows the [X Logical Font Description conventions](https://www.x.org/releases/X11R7.7/doc/xorg-docs/xlfd/xlfd.pdf).
+Custom `Renderer` callbacks receive an `Ink` role and resolve its RGB value with
+`view.get_theme().colors[ink]`. Custom `set_measurer()` callbacks should read the
+view's current `font_size` and use the same font as their drawing callbacks.
+The headless fallback scales its deterministic metrics with the font size.
+
 ## TextField
 
 ```c3
@@ -50,8 +106,8 @@ Widget* query = view.text_field("initial query")
 
 `View.text_field()` and `Widget.text_field()` create an editor with owned UTF-8
 storage. Initial strings and `set_text()` arguments are copied. `get_text()`
-borrows the current string until the next change or removal. Text fields have a
-preferred width of 160 and text-height-plus-16 height; sizing constraints, root
+borrows the current string until the next change or removal. With the default
+theme, text fields have a preferred width of 160 and text-height-plus-16 height; sizing constraints, root
 stretch, and clipping work as for other controls. Typing keeps the preferred width
 fixed, with horizontal scrolling to reveal the caret.
 

@@ -73,13 +73,13 @@ fn bool Widget.select(&self, sz anchor, sz caret)
 	return true;
 }
 
-fn Rect Widget.field_rect(&self) => inset(self.bounds, TEXT_FIELD_PADDING, true);
+fn Rect Widget.field_rect(&self) => inset(self.bounds, self.owner.get_theme().control_padding_y, true);
 
 fn int Widget.text_prefix_width(&self, sz position)
 {
 	View* view = self.owner;
 	String prefix = self.content[:position];
-	Size size = view.measure_text ? view.measure_text(view.measure_context, prefix) : measure_default(null, prefix);
+	Size size = view.text_metrics(prefix);
 	return math::clamp(size.width, 0, LAYOUT_LIMIT);
 }
 
@@ -194,9 +194,12 @@ fn bool field_key(Widget* field, ControlKey action, bool extend) @private
 fn void? paint_text_field(Widget* field, Renderer* renderer, Rect clip) @private
 {
 	Rect bounds = field.bounds;
-	renderer.border(bounds, INK)!;
-	bool focused = field.owner.focused == field;
-	if (focused) renderer.border(inset(bounds, 3, true), INK)!;
+	bool enabled = field.is_enabled();
+	Ink foreground = enabled ? INK : DISABLED;
+	renderer.fill(renderer.context, bounds, enabled ? SURFACE : DISABLED_SURFACE)!;
+	renderer.border(bounds, enabled ? BORDER : DISABLED)!;
+	bool focused = enabled && field.owner.focused == field;
+	if (focused) renderer.border(inset(bounds, 3, true), FOCUS)!;
 	Rect content = field.field_rect();
 	Rect text_clip = content.intersect(field.visible).intersect(clip);
 	if (text_clip.empty()) return;
@@ -207,13 +210,13 @@ fn void? paint_text_field(Widget* field, Renderer* renderer, Rect clip) @private
 	int start = field.text_prefix_width(math::min(selection.anchor, selection.caret));
 	int end = field.text_prefix_width(math::max(selection.anchor, selection.caret));
 	Rect selected = { coordinate((long)x + start), content.y, end - start, content.height };
-	if (focused && end > start) renderer.fill(renderer.context, selected, INK)!;
-	renderer.text(renderer.context, field.content, x, y, INK)!;
+	if (focused && end > start) renderer.fill(renderer.context, selected, SELECTION)!;
+	renderer.text(renderer.context, field.content, x, y, foreground)!;
 	if (focused && end > start)
 	{
 		// Redraw the full shaped run through the selection clip to retain kerning.
 		renderer.clip(renderer.context, selected.intersect(text_clip))!;
-		renderer.text(renderer.context, field.content, x, y, PAPER)!;
+		renderer.text(renderer.context, field.content, x, y, SELECTION_TEXT)!;
 		renderer.clip(renderer.context, text_clip)!;
 	}
 	if (focused)
@@ -221,6 +224,4 @@ fn void? paint_text_field(Widget* field, Renderer* renderer, Rect clip) @private
 		int caret = field.text_prefix_width(selection.caret);
 		renderer.fill(renderer.context, { coordinate((long)x + caret), content.y, 1, content.height }, INK)!;
 	}
-	if (!field.is_enabled()) renderer.fill(renderer.context,
-		{ x, y + field.text_size.height / 2, field.text_size.width, 1 }, INK)!;
 }

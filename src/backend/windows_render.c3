@@ -3,7 +3,6 @@ import std::os::win32, std::math;
 
 extern fn Win32_HDC get_dc(Win32_HWND hwnd) @cname("GetDC");
 extern fn int release_dc(Win32_HWND hwnd, Win32_HDC dc) @cname("ReleaseDC");
-extern fn Win32_HGDIOBJ get_stock_object(int object) @cname("GetStockObject");
 extern fn Win32_HGDIOBJ select_object(Win32_HDC dc, Win32_HGDIOBJ object) @cname("SelectObject");
 extern fn Win32_BOOL get_text_extent(Win32_HDC dc, Win32_LPCWSTR text, int length, Win32_SIZE* size) @cname("GetTextExtentPoint32W");
 extern fn int fill_rect(Win32_HDC dc, Win32_RECT* rect, Win32_HBRUSH brush) @cname("FillRect");
@@ -15,6 +14,11 @@ extern fn Win32_BOOL release_capture() @cname("ReleaseCapture");
 extern fn Win32_HWND set_focus(Win32_HWND hwnd) @cname("SetFocus");
 extern fn short get_key_state(int key) @cname("GetKeyState");
 extern fn Win32_BOOL screen_to_client(Win32_HWND hwnd, Win32_POINT* point) @cname("ScreenToClient");
+extern fn Win32_HGDIOBJ create_ui_font(int height, int width, int escapement, int orientation,
+	int weight, uint italic, uint underline, uint strikeout, uint charset, uint precision,
+	uint clip_precision, uint quality, uint pitch, Win32_LPCWSTR face) @cname("CreateFontW");
+extern fn Win32_HBRUSH create_ui_brush(uint color) @cname("CreateSolidBrush");
+extern fn Win32_BOOL delete_ui_object(Win32_HGDIOBJ object) @cname("DeleteObject");
 
 struct TrackMouseEvent
 {
@@ -30,15 +34,43 @@ struct WinCanvas
 	Win32_HWND hwnd;
 	Win32_HDC paint_dc;
 	fault failure;
+	View* view;
+	Win32_HGDIOBJ font;
+	int font_size;
+}
+
+fn void? WinCanvas.sync_font(&self) => @pool()
+{
+	int size = (self.view ? self.view.get_theme() : ui::DEFAULT_THEME).font_size;
+	if (self.font && self.font_size == size) return;
+	Win32_HGDIOBJ font = create_ui_font(-size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0,
+		"Segoe UI".to_temp_wstring()!);
+	if (!font) return ui::PLATFORM_ERROR~;
+	if (self.font) (void)delete_ui_object(self.font);
+	self.font = font;
+	self.font_size = size;
+}
+
+fn uint WinCanvas.color(&self, Ink ink)
+{
+	Color color = (self.view ? self.view.get_theme() : ui::DEFAULT_THEME).colors[ink];
+	return (uint)color.red | (uint)color.green << 8 | (uint)color.blue << 16;
+}
+
+fn void WinCanvas.dispose(&self)
+{
+	if (self.font) (void)delete_ui_object(self.font);
+	self.font = null;
 }
 
 fn Size measure_wintext(void* context, String text) @private => @pool()
 {
 	WinCanvas* canvas = context;
+	if (catch failure = canvas.sync_font()) { canvas.failure = failure; return {}; }
 	Win32_HDC dc = get_dc(canvas.hwnd);
 	if (!dc) { canvas.failure = ui::PLATFORM_ERROR; return {}; }
 	defer (void)release_dc(canvas.hwnd, dc);
-	Win32_HGDIOBJ old_font = select_object(dc, get_stock_object(17)); // DEFAULT_GUI_FONT
+	Win32_HGDIOBJ old_font = select_object(dc, canvas.font);
 	defer (void)select_object(dc, old_font);
 	Char16[] chars = (text.len ? text : "M").to_temp_utf16()!!;
 	Win32_SIZE size;
@@ -59,7 +91,9 @@ fn void? fill_winrect(void* context, ui::Rect rect, Ink ink) @private
 	if (rect.empty()) return;
 	WinCanvas* canvas = context;
 	Win32_RECT native = { rect.x, rect.y, rect.x + rect.width, rect.y + rect.height };
-	Win32_HBRUSH brush = (Win32_HBRUSH)get_stock_object(ink == PAPER ? 0 : 4);
+	Win32_HBRUSH brush = create_ui_brush(canvas.color(ink));
+	if (!brush) return ui::PLATFORM_ERROR~;
+	defer (void)delete_ui_object((Win32_HGDIOBJ)brush);
 	if (!fill_rect(canvas.paint_dc, &native, brush)) return ui::PLATFORM_ERROR~;
 }
 
@@ -68,7 +102,7 @@ fn void? draw_wintext(void* context, String text, int x, int y, Ink ink) @privat
 	WinCanvas* canvas = context;
 	Char16[] chars = text.to_temp_utf16()!!;
 	if (!chars.len) return;
-	win32::setTextColor(canvas.paint_dc, ink == PAPER ? 0xffffff : 0);
+	win32::setTextColor(canvas.paint_dc, canvas.color(ink));
 	if (!win32::textOut(canvas.paint_dc, x, y, chars.ptr, (int)chars.len)) return ui::PLATFORM_ERROR~;
 }
 
@@ -178,11 +212,17 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 	switch (message)
 	{
 		case 0x0f: // WM_PAINT
+			if (catch failure = window.canvas.sync_font())
+			{
+				window.canvas.failure = failure;
+				flush_window(window);
+				return true;
+			}
 			Win32_PAINTSTRUCT paint;
 			Win32_HDC dc = win32::beginPaint(hwnd, &paint);
 			if (dc)
 			{
-				Win32_HGDIOBJ old_font = select_object(dc, get_stock_object(17));
+				Win32_HGDIOBJ old_font = select_object(dc, window.canvas.font);
 				win32::setBkMode(dc, 1); // TRANSPARENT
 				window.canvas.paint_dc = dc;
 				Renderer renderer = { &window.canvas, &fill_winrect, &draw_wintext, &clip_winrect };

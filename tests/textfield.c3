@@ -305,7 +305,7 @@ fn void? field_clip(void* context, Rect clip) @private { FieldPaint* paint = con
 fn void? field_fill(void* context, Rect rect, Ink ink) @private
 {
 	FieldPaint* paint = context;
-	if (ink != INK || !rect_equal(paint.clip, paint.content)) return;
+	if ((ink != INK && ink != SELECTION) || !rect_equal(paint.clip, paint.content)) return;
 	if (rect.width == 1 && rect.height == paint.content.height) { paint.caret = rect; }
 	else if (rect.height == paint.content.height) { paint.selected = rect; }
 }
@@ -313,7 +313,7 @@ fn void? field_text(void* context, String text, int x, int y, Ink ink) @private
 {
 	FieldPaint* paint = context;
 	paint.text_x = x;
-	if (ink == PAPER) paint.inverse++;
+	if (ink == SELECTION_TEXT) paint.inverse++;
 }
 
 fn void textfield_paint_selection_caret_and_horizontal_reveal_keep_fixed_geometry() @test

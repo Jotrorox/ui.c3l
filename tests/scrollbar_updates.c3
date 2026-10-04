@@ -40,7 +40,7 @@ fn void? scrollbar_paint_fill(void* context, Rect rect, Ink ink) @private
 	{
 		for (int x = visible.x; x < visible.x + visible.width; x++)
 		{
-			probe.pixels[y * 120 + x] = ink == INK ? 1 : 0;
+			probe.pixels[y * 120 + x] = DEFAULT_THEME.colors[ink].red == 0 ? 1 : 0;
 		}
 	}
 }

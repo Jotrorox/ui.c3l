@@ -111,6 +111,7 @@ fn void? WaylandWindow.init(&self)
 	if (!self.compositor || !self.shm || !self.base) return ui::DISPLAY_UNAVAILABLE~;
 	if (self.view)
 	{
+		self.canvas.view = self.view;
 		self.canvas.load()!;
 		self.xkb.load()!;
 	}

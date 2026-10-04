@@ -40,6 +40,8 @@ struct WCanvas
 	uint metric_pixel;
 	int ascent;
 	int height;
+	View* view;
+	int current_font_size;
 }
 
 fn void? WCanvas.load(&self)
@@ -66,18 +68,26 @@ fn void? WCanvas.load(&self)
 	@load_symbol(self.font_extents, self.library, "cairo_font_extents")!;
 	self.metric_surface = self.image(&self.metric_pixel, 1, 1, 1, 4); // CAIRO_FORMAT_RGB24
 	self.metrics = self.create(self.metric_surface);
+	self.sync_theme();
+	if (self.status(self.metrics)) return ui::PLATFORM_ERROR~;
+}
+
+fn void WCanvas.sync_theme(&self)
+{
+	int size = (self.view ? self.view.get_theme() : ui::DEFAULT_THEME).font_size;
+	if (self.current_font_size == size) return;
 	self.font(self.metrics);
 	CFontExtents extents;
 	self.font_extents(self.metrics, &extents);
-	if (self.status(self.metrics)) return ui::PLATFORM_ERROR~;
 	self.ascent = (int)math::ceil(extents.ascent);
 	self.height = (int)math::ceil(extents.ascent + extents.descent);
+	self.current_font_size = size;
 }
 
 fn void WCanvas.font(&self, void* context)
 {
 	self.select_font(context, "sans", 0, 0);
-	self.font_size(context, 14);
+	self.font_size(context, (self.view ? self.view.get_theme() : ui::DEFAULT_THEME).font_size);
 }
 
 fn void WCanvas.dispose(&self)
@@ -90,6 +100,7 @@ fn void WCanvas.dispose(&self)
 fn Size measure_wayland_text(void* context, String text) @private => @pool()
 {
 	WCanvas* canvas = context;
+	canvas.sync_theme();
 	CTextExtents extents;
 	canvas.text_extents(canvas.metrics, text.zstr_tcopy(), &extents);
 	return { (int)math::ceil(math::max(extents.x_advance, extents.x_bearing + extents.width)), canvas.height };
@@ -107,8 +118,8 @@ fn void? fill_wayland_rect(void* context, ui::Rect rect, Ink ink) @private
 {
 	if (rect.empty()) return;
 	WCanvas* canvas = context;
-	double color = ink == PAPER ? 1 : 0;
-	canvas.color(canvas.drawing, color, color, color);
+	Color color = (canvas.view ? canvas.view.get_theme() : ui::DEFAULT_THEME).colors[ink];
+	canvas.color(canvas.drawing, color.red / 255.0, color.green / 255.0, color.blue / 255.0);
 	canvas.rectangle(canvas.drawing, rect.x, rect.y, rect.width, rect.height);
 	canvas.fill(canvas.drawing);
 }
@@ -116,8 +127,8 @@ fn void? fill_wayland_rect(void* context, ui::Rect rect, Ink ink) @private
 fn void? draw_wayland_text(void* context, String text, int x, int y, Ink ink) @private => @pool()
 {
 	WCanvas* canvas = context;
-	double color = ink == PAPER ? 1 : 0;
-	canvas.color(canvas.drawing, color, color, color);
+	Color color = (canvas.view ? canvas.view.get_theme() : ui::DEFAULT_THEME).colors[ink];
+	canvas.color(canvas.drawing, color.red / 255.0, color.green / 255.0, color.blue / 255.0);
 	canvas.move(canvas.drawing, x, (double)y + canvas.ascent);
 	canvas.show_text(canvas.drawing, text.zstr_tcopy());
 }

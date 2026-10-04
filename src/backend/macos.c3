@@ -557,7 +557,8 @@ fn void? open(WindowOptions options, View* view = null)
 		objc::msg_send(window.window, MacVoidArg, "setDelegate:", window.native_view);
 		if (view)
 		{
-			window.canvas.init()!;
+			window.canvas.view = view;
+			window.canvas.init(view.get_theme())!;
 			void* tracking = objc::msg_send(objc::alloc(objc::getClass("NSTrackingArea")), MacTrackingInit,
 				"initWithRect:options:owner:userInfo:", frame, 0x623UL, window.native_view, null);
 			if (!tracking) return ui::PLATFORM_ERROR~;
