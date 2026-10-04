@@ -23,7 +23,7 @@ fn bool Widget.set_scrollbar(&self, bool enabled = true)
 fn Rect Widget.content_rect(&self)
 {
 	Rect content = inset(self.bounds, self.layout.padding, self.scroll_space);
-	if (self.scrollbar) content.width = math::max(0, content.width - SCROLLBAR_WIDTH);
+	if (self.scrollbar) content.width = math::max(0, content.width - self.owner.get_theme().scaled(SCROLLBAR_WIDTH));
 	return content;
 }
 
@@ -50,9 +50,10 @@ fn void Widget.place_scrollbar(&self, Rect old_visible)
 	Rect padded = inset(self.bounds, self.layout.padding, true);
 	if (self.scrollbar && self.scroll_max && !padded.empty())
 	{
-		int width = math::min(SCROLLBAR_WIDTH, padded.width);
+		Theme theme = self.owner.get_theme();
+		int width = math::min(theme.scaled(SCROLLBAR_WIDTH), padded.width);
 		track = { coordinate((long)padded.x + padded.width - width), padded.y, width, padded.height };
-		int length = math::min(track.height, math::max(SCROLLBAR_MIN_THUMB,
+		int length = math::min(track.height, math::max(theme.scaled(SCROLLBAR_MIN_THUMB),
 			(int)((long)track.height * padded.height / self.content_height)));
 		int travel = track.height - length;
 		int top = (int)(((long)self.scroll_y * travel + self.scroll_max / 2) / self.scroll_max);
@@ -270,7 +271,7 @@ fn Rect reveal_clip(Widget* widget) @private
 // placement and assigns focus. Rejected candidates cause no scroll or damage.
 fn bool reveal_candidate(Widget* widget, bool apply) @private
 {
-	if ((widget.kind != BUTTON && widget.kind != CHECKBOX) ||
+	if ((widget.kind != BUTTON && widget.kind != CHECKBOX && widget.kind != TEXT_FIELD) ||
 		!widget.is_enabled() || !widget.is_visible()) return false;
 	Rect target = widget.bounds;
 	if (target.empty()) return false;

@@ -29,6 +29,7 @@ struct View
 	Widget* hovered;
 	Widget* pressed;
 	Widget* focused;
+	ulong focus_epoch; // Invalidates native partial text commits on focus changes.
 	Widget* keyboard_scroll; // Retains the receiver when scrolling clips focus.
 	Widget* scroll_pressed; // Cleared before its target can be detached or freed.
 	bool scroll_press_active; // Release stays consumed even after cancellation.
@@ -44,6 +45,9 @@ struct View
 	bool subtree_layout_dirty;
 	bool measure_dirty;
 	bool custom_root_spacing;
+	bool custom_theme;
+	Theme theme; // Read via get_theme(); mutate via set_theme().
+	ulong theme_epoch;
 	int root_padding;
 	int root_gap;
 	Alignment root_main_align;
@@ -121,8 +125,9 @@ fn void View.update(&self)
 	}
 	if (self.layout_dirty || self.subtree_layout_dirty)
 	{
-		int padding = self.custom_root_spacing ? self.root_padding : 16;
-		int gap = self.custom_root_spacing ? self.root_gap : 8;
+		Theme theme = self.get_theme();
+		int padding = self.custom_root_spacing ? self.root_padding : theme.padding;
+		int gap = self.custom_root_spacing ? self.root_gap : theme.gap;
 		Rect content = inset({ 0, 0, self.width, self.height }, padding);
 		place_children(self.first, false, content, content, gap,
 			self.root_main_align, self.root_cross_align, self.layout_dirty);

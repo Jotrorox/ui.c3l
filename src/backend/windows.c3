@@ -15,6 +15,8 @@ struct WinWindow
 	View* view;
 	WinCanvas canvas;
 	int wheel_remainder;
+	ushort text_surrogate;
+	ulong text_epoch;
 }
 
 fn Win32_LRESULT window_proc(Win32_HWND hwnd, uint message, Win32_WPARAM wparam, Win32_LPARAM lparam) @private
@@ -51,7 +53,8 @@ fn void? open(WindowOptions options, View* view = null) => @pool()
 		win32::WS_OVERLAPPEDWINDOW, int::min, int::min,
 		rect.right - rect.left, rect.bottom - rect.top, null, null, instance, null);
 	if (!hwnd) return ui::PLATFORM_ERROR~;
-	WinWindow window = { .view = view, .canvas.hwnd = hwnd };
+	WinWindow window = { .view = view, .canvas.hwnd = hwnd, .canvas.view = view };
+	defer window.canvas.dispose();
 	defer { if (!window.closed) (void)destroy_window(hwnd); }
 	win32::setWindowLongPtrW(hwnd, win32::GWLP_USERDATA, (Win32_LONG_PTR)&window);
 	if (view)

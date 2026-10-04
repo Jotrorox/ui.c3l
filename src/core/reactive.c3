@@ -152,6 +152,7 @@ fn void dispose_bindings(Widget* self) @private
 fn void Widget.bind(&self, TextBinding evaluate, void* context = null)
 {
 	assert(!self.is_container(), "Only leaf widgets have labels");
+	assert(self.kind != TEXT_FIELD, "TextFields own their text; use set_text and on_text_change to synchronize state");
 	assert(evaluate != null);
 	self.unbind();
 	self.binding = mem::new(Binding, { .widget = self, .evaluate = evaluate, .context = context });

@@ -1,5 +1,6 @@
 module ui::backend @feat(MACOS);
 import std::core::test;
+import std::math;
 import std::os::macos::objc, std::os::macos::cf;
 
 extern void* mac_rgb_space @cname("NSDeviceRGBColorSpace");
@@ -211,6 +212,90 @@ fn void macos_native_utf8_metrics_and_canvas_lifetime() @test
 		canvas.dispose();
 		test::eq(canvas.attributes[0], null);
 		test::eq(canvas.attributes[1], null);
+	};
+}
+
+fn void macos_theme_font_updates_native_measurement_and_field_prefixes() @test
+{
+	objc::@autoreleasepool()
+	{
+		View view;
+		defer view.free();
+		Theme initial = view.get_theme();
+		initial.font_size = 18;
+		view.set_theme(initial);
+		MacCanvas canvas = { .view = &view };
+		canvas.init()!!;
+		defer canvas.dispose();
+		view.resize(600, 400);
+		view.set_measurer(&measure_mactext, &canvas);
+		Widget* field = view.text_field("Grüße");
+		view.focus_next();
+		test::eq(canvas.theme.font_size, 18);
+		Size before = field.text_size;
+		int prefix = field.text_prefix_width(2);
+		Theme theme = view.get_theme();
+		theme.font_size = 28;
+		view.set_theme(theme);
+		view.update();
+		test::eq(field.text_size.width > before.width, true);
+		test::eq(field.text_size.height > before.height, true);
+		test::eq(field.text_prefix_width(2) > prefix, true);
+		test::eq(canvas.theme.font_size, 28);
+		test::eq(field.selection().caret, field.content.len);
+		test::eq((bool)canvas.failure, false);
+	};
+}
+
+fn void macos_theme_native_pixels_distinguish_surface_focus_disabled_and_pressed() @test
+{
+	objc::@autoreleasepool()
+	{
+		void* bitmap = objc::msg_send(objc::alloc(objc::getClass("NSBitmapImageRep")), MacBitmap,
+			"initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:",
+			null, 640L, 480L, 8L, 4L, true, false, mac_rgb_space, 2560L, 32L);
+		test::eq(bitmap != null, true);
+		defer objc::release(bitmap);
+		void* graphics = objc::msg_send(objc::getClass("NSGraphicsContext"), MacObjectArg, "graphicsContextWithBitmapImageRep:", bitmap);
+		objc::msg_send(objc::getClass("NSGraphicsContext"), MacVoid, "saveGraphicsState");
+		defer objc::msg_send(objc::getClass("NSGraphicsContext"), MacVoid, "restoreGraphicsState");
+		objc::msg_send(objc::getClass("NSGraphicsContext"), MacVoidArg, "setCurrentContext:", graphics);
+		void* cg = objc::msg_send(graphics, MacObject, "CGContext");
+		mac_translate(cg, 0, 480);
+		mac_scale(cg, 2, -2);
+		graphics = objc::msg_send(objc::getClass("NSGraphicsContext"), MacFlippedContext, "graphicsContextWithCGContext:flipped:", cg, true);
+		objc::msg_send(objc::getClass("NSGraphicsContext"), MacVoidArg, "setCurrentContext:", graphics);
+		objc::msg_send(objc::getClass("NSGraphicsContext"), MacVoid, "saveGraphicsState");
+		defer objc::msg_send(objc::getClass("NSGraphicsContext"), MacVoid, "restoreGraphicsState");
+		View view;
+		defer view.free();
+		MacCanvas canvas = { .view = &view };
+		canvas.init()!!;
+		defer canvas.dispose();
+		view.resize(320, 240);
+		view.set_measurer(&measure_mactext, &canvas);
+		Widget* button = view.button("Save");
+		Widget* field = view.text_field("Disabled");
+		field.set_enabled(false);
+		view.focus_next();
+		Theme theme = view.get_theme();
+		theme.colors[Ink.PAPER] = { 20, 30, 40 };
+		theme.colors[Ink.SURFACE] = { 45, 55, 65 };
+		theme.colors[Ink.DISABLED_SURFACE] = { 70, 80, 90 };
+		theme.colors[Ink.FOCUS] = { 200, 210, 220 };
+		theme.colors[Ink.PRESSED] = { 100, 110, 120 };
+		view.set_theme(theme);
+		view.update();
+		Renderer renderer = { &canvas, &fill_macrect, &draw_mactext, &clip_macrect };
+		view.paint(&renderer, view.take_damage())!!;
+		test::eq(math::abs(mac_red(bitmap, 1, 1) * 255 - 20) < 2, true);
+		test::eq(math::abs(mac_red(bitmap, button.bounds.x + 4, button.bounds.y + 4) * 255 - 45) < 2, true);
+		test::eq(math::abs(mac_red(bitmap, button.bounds.x + 3, button.bounds.y + 4) * 255 - 200) < 2, true);
+		test::eq(math::abs(mac_red(bitmap, field.bounds.x + 4, field.bounds.y + 4) * 255 - 70) < 2, true);
+		view.pointer_down(button.bounds.x + 1, button.bounds.y + 1);
+		view.paint(&renderer, view.take_damage())!!;
+		test::eq(math::abs(mac_red(bitmap, button.bounds.x + 4, button.bounds.y + 4) * 255 - 100) < 2, true);
+		test::eq((bool)canvas.failure, false);
 	};
 }
 

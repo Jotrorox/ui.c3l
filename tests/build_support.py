@@ -12,6 +12,9 @@ def compiler_flags():
     if profile not in ("debug", "release"):
         raise ValueError("UI_TEST_OPTIMIZATION must be debug or release")
     flags = ["-O3" if profile == "release" else "-O0"]
+    if sys.platform == "darwin":
+        # Apple's linker supports the current SDK for both ARM64 and Rosetta.
+        flags.append("--linker=cc")
     target = os.environ.get("UI_TEST_TARGET")
     if target:
         flags.extend(["--target", target])

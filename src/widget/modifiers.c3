@@ -4,6 +4,7 @@ module ui::handler <Context>;
 // lambda parameters from the context pointer: `fn (c) => c.get() != 0`.
 alias Click = fn void(Context);
 alias Change = fn void(Context, bool);
+alias TextChange = fn void(Context, String);
 alias Text = fn String(Context);
 alias Predicate = fn bool(Context);
 
@@ -134,6 +135,18 @@ macro Widget* Widget.@on_change(&self, context, #handler)
 	handler::Change{$Typeof(context)} on_change = #handler;
 	self.on_change = (CheckHandler)on_change;
 	self.change_context = context;
+	return self;
+}
+
+// User edits update the owned field buffer before calling the handler. Text is
+// borrowed for the duration of the callback; set_text() is silent.
+macro Widget* Widget.@on_text_change(&self, context, #handler)
+{
+	@require_context(context);
+	assert(self.kind == TEXT_FIELD, "Only TextFields have text change handlers");
+	handler::TextChange{$Typeof(context)} on_change = #handler;
+	self.on_text_change = (TextChangeHandler)on_change;
+	self.text_change_context = context;
 	return self;
 }
 

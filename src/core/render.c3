@@ -1,8 +1,6 @@
 module ui;
 
-// Semantic colors allow backends to select pixels without assuming an X11
-// visual's channel masks. The initial palette is intentionally monochrome.
-enum Ink { PAPER, INK }
+// Callbacks receive semantic palette roles; resolve them through get_theme().
 alias FillRect = fn void?(void* context, Rect rect, Ink ink);
 alias DrawText = fn void?(void* context, String text, int x, int y, Ink ink);
 alias SetClip = fn void?(void* context, Rect rect);
@@ -30,6 +28,7 @@ fn void? View.paint(&self, Renderer* renderer, Rect clip)
 {
 	clip = clip.intersect({ 0, 0, self.width, self.height });
 	if (clip.empty()) return;
+	Theme theme = self.get_theme();
 	renderer.clip(renderer.context, clip)!;
 	renderer.fill(renderer.context, clip, PAPER)!;
 	for (Widget* widget = self.first; widget; widget = widget.next_in_tree())
@@ -41,51 +40,55 @@ fn void? View.paint(&self, Renderer* renderer, Rect clip)
 			if (!track_clip.empty())
 			{
 				renderer.clip(renderer.context, track_clip)!;
-				renderer.border(widget.scroll_track, INK)!;
-				renderer.fill(renderer.context, widget.scroll_thumb, INK)!;
+				Ink ink = widget.is_enabled() ? INK : DISABLED;
+				renderer.fill(renderer.context, widget.scroll_track, widget.is_enabled() ? SURFACE : DISABLED_SURFACE)!;
+				renderer.border(widget.scroll_track, widget.is_enabled() ? BORDER : DISABLED)!;
+				renderer.fill(renderer.context, widget.scroll_thumb, ink)!;
 			}
 			continue;
 		}
 		renderer.clip(renderer.context, widget.visible.intersect(clip))!;
+		if (widget.kind == TEXT_FIELD)
+		{
+			paint_text_field(widget, renderer, clip)!;
+			continue;
+		}
 		Rect rect = widget.bounds;
-		Ink foreground = INK;
+		bool enabled = widget.is_enabled();
+		Ink foreground = enabled ? INK : DISABLED;
 		int x = rect.x;
 		int y = rect.y;
 		if (widget.kind == BUTTON)
 		{
-			bool down = self.pressed == widget && self.hovered == widget;
-			if (down)
+			bool down = enabled && self.pressed == widget && self.hovered == widget;
+			renderer.fill(renderer.context, rect, !enabled ? DISABLED_SURFACE :
+				down ? PRESSED : self.hovered == widget ? HOVER : SURFACE)!;
+			if (down) foreground = PRESSED_TEXT;
+			renderer.border(rect, enabled ? BORDER : DISABLED)!;
+			if (enabled && self.focused == widget)
 			{
-				renderer.fill(renderer.context, rect, INK)!;
-				foreground = PAPER;
+				renderer.border(inset(rect, 3, true), FOCUS)!;
 			}
-			renderer.border(rect, INK)!;
-			if (self.focused == widget || self.hovered == widget)
-			{
-				renderer.border({ rect.x + 3, rect.y + 3, rect.width - 6, rect.height - 6 }, foreground)!;
-			}
-			x += 12;
-			y += 8;
+			x += theme.control_padding_x;
+			y += theme.control_padding_y;
 		}
 		else if (widget.kind == CHECKBOX)
 		{
-			Rect box = { x + CHECKBOX_PADDING, y + (rect.height - CHECKBOX_SIZE) / 2,
-				CHECKBOX_SIZE, CHECKBOX_SIZE };
-			bool down = self.pressed == widget && self.hovered == widget;
-			if (down) renderer.fill(renderer.context, box, INK)!;
-			renderer.border(box, INK)!;
-			if (widget.checked) renderer.fill(renderer.context, inset(box, 4), down ? PAPER : INK)!;
-			if (self.focused == widget || self.hovered == widget)
+			int size = theme.scaled(CHECKBOX_SIZE);
+			int padding = theme.control_padding_y / 2;
+			Rect box = { x + padding, y + (rect.height - size) / 2, size, size };
+			bool down = enabled && self.pressed == widget && self.hovered == widget;
+			renderer.fill(renderer.context, box, !enabled ? DISABLED_SURFACE :
+				down ? PRESSED : self.hovered == widget ? HOVER : SURFACE)!;
+			renderer.border(box, enabled ? BORDER : DISABLED)!;
+			if (widget.checked) renderer.fill(renderer.context, inset(box, size / 4, true), down ? PRESSED_TEXT : foreground)!;
+			if (enabled && self.focused == widget)
 			{
-				renderer.border(rect, INK)!;
+				renderer.border(rect, FOCUS)!;
 			}
-			x += CHECKBOX_PADDING + CHECKBOX_SIZE + CHECKBOX_GAP;
+			x += padding + size + theme.gap;
 			y += (rect.height - widget.text_size.height) / 2;
 		}
 		renderer.text(renderer.context, widget.content, x, y, foreground)!;
-		if (!widget.is_enabled())
-		{
-			renderer.fill(renderer.context, { x, y + widget.text_size.height / 2, widget.text_size.width, 1 }, foreground)!;
-		}
 	}
 }

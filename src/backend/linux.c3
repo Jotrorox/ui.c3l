@@ -21,6 +21,13 @@ fn ControlKey keysym_control(uint symbol) @private
 		case 0xff95: return SCROLL_HOME;
 		case 0xff57:
 		case 0xff9c: return SCROLL_END;
+		case 0xff51:
+		case 0xff96: return LEFT;
+		case 0xff53:
+		case 0xff98: return RIGHT;
+		case 0xff08: return BACKSPACE;
+		case 0xffff:
+		case 0xff9f: return DELETE;
 		default: return NONE;
 	}
 }

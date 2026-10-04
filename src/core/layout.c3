@@ -97,8 +97,7 @@ fn bool View.set_root_spacing(&self, int padding = 16, int gap = 8)
 {
 	assert(!active_binding, "Bindings cannot mutate widgets");
 	if (padding < 0 || padding > LAYOUT_LIMIT || gap < 0 || gap > LAYOUT_LIMIT) return false;
-	if (padding == (self.custom_root_spacing ? self.root_padding : 16) &&
-		gap == (self.custom_root_spacing ? self.root_gap : 8)) return true;
+	if (self.custom_root_spacing && padding == self.root_padding && gap == self.root_gap) return true;
 	self.custom_root_spacing = true;
 	self.root_padding = padding;
 	self.root_gap = gap;
@@ -150,6 +149,7 @@ fn void Widget.measure(&self)
 {
 	if (self.hidden || !self.measure_dirty) return;
 	self.measure_dirty = false;
+	Theme theme = self.owner.get_theme();
 	Size size;
 	if (self.is_container())
 	{
@@ -185,7 +185,7 @@ fn void Widget.measure(&self)
 			self.request_layout(); // A fixed viewport can have a changing extent.
 		}
 		size.width = layout_add(size.width, self.layout.padding * 2);
-		if (self.scrollbar) size.width = layout_add(size.width, SCROLLBAR_WIDTH);
+		if (self.scrollbar) size.width = layout_add(size.width, theme.scaled(SCROLLBAR_WIDTH));
 		size.height = layout_add(size.height, self.layout.padding * 2);
 	}
 	else
@@ -193,23 +193,30 @@ fn void Widget.measure(&self)
 		if (self.text_dirty)
 		{
 			View* view = self.owner;
-			self.text_size = view.measure_text ? view.measure_text(view.measure_context, self.content) :
-				measure_default(null, self.content);
+			self.text_size = view.text_metrics(self.content);
 			self.text_size.width = math::clamp(self.text_size.width, 0, LAYOUT_LIMIT);
 			self.text_size.height = math::clamp(self.text_size.height, 0, LAYOUT_LIMIT);
 			self.text_dirty = false;
+			if (self.kind == TEXT_FIELD) self.reveal_caret();
 		}
 		size = self.text_size;
 		if (self.kind == BUTTON)
 		{
-			size.width = layout_add(size.width, 24);
-			size.height = layout_add(size.height, 16);
+			size.width = layout_add(size.width, theme.control_padding_x * 2);
+			size.height = layout_add(size.height, theme.control_padding_y * 2);
 		}
 		else if (self.kind == CHECKBOX)
 		{
-			size.width = layout_add(CHECKBOX_SIZE + CHECKBOX_PADDING * 2,
-				self.content.len ? layout_add(CHECKBOX_GAP, size.width) : 0);
-			size.height = layout_add(math::max(CHECKBOX_SIZE, size.height), CHECKBOX_PADDING * 2);
+			int padding = theme.control_padding_y / 2;
+			size.width = layout_add(theme.scaled(CHECKBOX_SIZE) + padding * 2,
+				self.content.len ? layout_add(theme.gap, size.width) : 0);
+			size.height = layout_add(math::max(theme.scaled(CHECKBOX_SIZE), size.height), padding * 2);
+		}
+		else if (self.kind == TEXT_FIELD)
+		{
+			// Editing does not grow the control or move its siblings.
+			size.width = theme.scaled(TEXT_FIELD_WIDTH);
+			size.height = layout_add(math::max(theme.scaled(16), size.height), theme.control_padding_y * 2);
 		}
 	}
 	Layout layout = self.layout;
@@ -333,6 +340,7 @@ fn void Widget.place(&self, Rect bounds, Rect ancestor_clip, bool scrolling = fa
 	self.bounds = bounds;
 	self.visible = visible;
 	self.scroll_space = scrolling;
+	if (self.kind == TEXT_FIELD) self.reveal_caret();
 	if (self.is_container())
 	{
 		Rect content = self.content_rect();

@@ -45,6 +45,7 @@ struct Setup
 	uint resource_mask;
 	char min_keycode;
 	char max_keycode;
+	uint colormap;
 }
 
 fn ushort read16(char[] data, sz offset) @private => (ushort)((uint)data[offset] | (uint)data[offset + 1] << 8);
@@ -170,7 +171,7 @@ fn Setup? parse_setup(char[] data, uint screen) @private
 		if (index == screen)
 		{
 			return { base | (mask & (~mask + 1)), read32(data, offset), read32(data, offset + 8),
-				read32(data, offset + 12), base, mask, data[26], data[27] };
+				read32(data, offset + 12), base, mask, data[26], data[27], read32(data, offset + 4) };
 		}
 		uint depths = data[offset + 39];
 		offset += 40;
@@ -294,7 +295,7 @@ fn void? open_x11(WindowOptions options, View* view = null) => @pool()
 	uint delete_window = intern_atom(&connection, "WM_DELETE_WINDOW")!;
 	uint net_name = intern_atom(&connection, "_NET_WM_NAME")!;
 	uint utf8 = intern_atom(&connection, "UTF8_STRING")!;
-	XCanvas canvas = { .connection = &connection, .setup = setup };
+	XCanvas canvas = { .connection = &connection, .setup = setup, .view = view };
 	defer canvas.dispose();
 	if (view) canvas.init()!;
 	char[40] create;

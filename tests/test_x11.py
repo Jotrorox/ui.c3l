@@ -42,7 +42,7 @@ def setup_reply():
     struct.pack_into("<H", body, 18, 65535)
     body[20] = 1  # one screen
     body[26:28] = bytes([8, 255])  # valid keyboard keycode range
-    struct.pack_into("<IIII", body, 32, 0x100, 0, 0xFFFFFF, 0)
+    struct.pack_into("<IIII", body, 32, 0x100, 0x101, 0xFFFFFF, 0)
     body[70] = 24
     return struct.pack("<BBHHH", 1, 0, 11, 0, len(body) // 4) + body
 
@@ -139,6 +139,23 @@ class X11IntegrationTests(unittest.TestCase):
                                 self.assertEqual(struct.unpack_from("<HH", request, 16), (800, 600))
                                 self.assertEqual(struct.unpack_from("<III", request, 28),
                                                  (0x802, 0xFFFFFF, 0x22C07F if widgets else 1 << 17))
+                            elif opcode == 49 and widgets:  # ListFonts: exercise fixed fallback.
+                                self.assertEqual(struct.unpack_from("<H", request, 4)[0], 1)
+                                self.assertIn(b"-14-", request[8:])
+                                reply = bytearray(32)
+                                reply[0] = 1
+                                struct.pack_into("<H", reply, 2, sequence)
+                                connection.sendall(reply)
+                            elif opcode == 84 and widgets:  # AllocColor uses the root colormap.
+                                self.assertEqual(struct.unpack_from("<I", request, 4)[0], 0x101)
+                                red, green, blue = struct.unpack_from("<HHH", request, 8)
+                                reply = bytearray(32)
+                                reply[0] = 1
+                                struct.pack_into("<H", reply, 2, sequence)
+                                struct.pack_into("<HHH", reply, 8, red, green, blue)
+                                struct.pack_into("<I", reply, 16,
+                                                 (red // 257) << 16 | (green // 257) << 8 | blue // 257)
+                                connection.sendall(reply)
                             elif opcode == 45 and widgets:  # OpenFont
                                 self.assertEqual(struct.unpack_from("<I", request, 4)[0], 0x200002)
                                 self.assertEqual(request[12:17], b"fixed")

@@ -1,7 +1,8 @@
 """Opt-in desktop test: UI_NATIVE_TESTS=1 python3 -m unittest discover -s tests -v.
 
-Uses the OS APIs through ctypes only in the test driver. The Linux library and
-example themselves do not link libX11. Works with Xvfb and with Windows desktops.
+Uses OS APIs in the test driver, plus a test-only helper for AppKit's main run
+loop. The Linux library and example do not link libX11. Works with Xvfb,
+Windows desktops, and macOS without Accessibility or screen-recording access.
 """
 import ctypes as c
 from contextlib import contextmanager
@@ -17,6 +18,18 @@ import time
 import unittest
 
 from build_support import compile_fixture
+
+
+def create_desktop(directory):
+    if sys.platform == "darwin":
+        from appkit_desktop import AppKitDesktop
+        return AppKitDesktop(directory)
+    return WindowsDesktop() if sys.platform == "win32" else X11Desktop()
+
+
+def desktop_environment(desktop, **variables):
+    return {**os.environ, "UI_BACKEND": "x11", **getattr(desktop, "environment", {}), **variables}
+
 
 class XClientMessage(c.Structure):
     _fields_ = [("type", c.c_int), ("serial", c.c_ulong), ("send_event", c.c_int),
@@ -343,10 +356,10 @@ class NativeWindowTests(unittest.TestCase):
     def fixture(self, name, title, reopen=False, reopen_title="ui keyboard test 1"):
         with tempfile.TemporaryDirectory() as directory:
             binary = compile_fixture(name, directory)
-            desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
+            desktop = create_desktop(directory)
             try:
                 with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      env={**os.environ, "UI_TEST_REOPEN": "1" if reopen else "0", "UI_BACKEND": "x11"},
+                                      env=desktop_environment(desktop, UI_TEST_REOPEN="1" if reopen else "0"),
                                       text=True) as process:
                     lines = queue.Queue()
 
@@ -503,6 +516,37 @@ class NativeWindowTests(unittest.TestCase):
             desktop.physical_pointer(window, "move", x + 2, y + 2)
             desktop.click(window, initial["inspect"])
             self.assertEqual(snapshot()["inner_offset"], moved["inner_extent"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "AppKit event routing only")
+    def test_appkit_capture_routes_drag_and_release_outside_content_view(self):
+        with self.fixture("scrollbar_window", "ui scrollbar test 0") as (desktop, window, snapshot):
+            desktop.key(window, "Tab")
+            desktop.key(window, "Return")
+            initial = snapshot()
+            x, y, _, _ = initial["inner_thumb"]
+            desktop.pointer(window, "down", x + 2, y + 2)
+            # NSWindow dispatches drag/up to the original mouse-down view.
+            # The helper never calls that view's drag/up methods directly.
+            desktop.pointer(window, "leave", -1, -1)
+            desktop.key(window, "Return")
+            held = snapshot()
+            self.assertTrue(held["dragging"] and held["scroll_press"])
+            self.assertEqual(held["inner_offset"], 0)
+            try:
+                desktop.pointer(window, "move", -100, 700)
+                desktop.key(window, "Return")
+                dragged = snapshot()
+                self.assertEqual(dragged["inner_offset"], dragged["inner_extent"])
+                self.assertTrue(dragged["dragging"] and dragged["scroll_press"])
+            finally:
+                desktop.pointer(window, "up", -100, 700)
+            desktop.key(window, "Return")
+            released = snapshot()
+            self.assertEqual(released["clicks"], 0)
+            self.assertFalse(released["dragging"] or released["scroll_press"])
+            desktop.pointer(window, "move", x + 2, y + 2)
+            desktop.key(window, "Return")
+            self.assertEqual(snapshot()["inner_offset"], released["inner_extent"])
 
     def test_nested_wheel_boundary_bubbling_stale_clicks_and_focus_reveal(self):
         with self.fixture("scroll_window", "ui scroll test") as (desktop, window, snapshot):
@@ -684,14 +728,20 @@ class NativeWindowTests(unittest.TestCase):
             self.assertEqual((state["label"], state["checked"], state["changes"]), ("Value: 1", False, 3))
             desktop.click(window, hidden["show"])
             restored = snapshot()
-            self.assertEqual(restored["bound"], initial["bound"])
+            # The label changed while hidden. Native proportional fonts can
+            # measure "Value: 1" differently from "Value: 0".
+            self.assertEqual(restored["bound"][:2], initial["bound"][:2])
+            self.assertEqual(restored["bound"][3], initial["bound"][3])
+            self.assertGreater(restored["bound"][2], 0)
             self.assertEqual(restored["footer"], initial["footer"])
             self.assertEqual(restored["label"], "Value: 1")
             self.assertTrue(restored["owned_checked"])
             desktop.key(window, "Space")
             self.assertFalse(snapshot()["shown"])
             desktop.key(window, "Return")
-            self.assertTrue(snapshot()["shown"])
+            stable = snapshot()
+            self.assertTrue(stable["shown"])
+            self.assertEqual(stable["bound"], restored["bound"])
 
             desktop.click(window, initial["enable"])
             self.assertFalse(snapshot()["enabled"])
@@ -791,10 +841,10 @@ class NativeWindowTests(unittest.TestCase):
     def test_nested_input_resize_clipping_and_subtree_removal(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = compile_fixture("nested_window", directory)
-            desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
+            desktop = create_desktop(directory)
             try:
                 with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      text=True) as process:
+                                      env=desktop_environment(desktop), text=True) as process:
                     lines = queue.Queue()
 
                     def read_lines():
@@ -892,9 +942,10 @@ class NativeWindowTests(unittest.TestCase):
     def test_title_client_size_close_and_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = compile_fixture("native_window", directory)
-            desktop = WindowsDesktop() if sys.platform == "win32" else X11Desktop()
+            desktop = create_desktop(directory)
             try:
-                with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+                with subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      env=desktop_environment(desktop), text=True) as process:
                     try:
                         for index in range(2):
                             deadline = time.monotonic() + 5
@@ -907,6 +958,8 @@ class NativeWindowTests(unittest.TestCase):
                                     break
                                 time.sleep(0.02)
                             self.assertTrue(window, "native window did not appear")
+                            if index:
+                                self.assertIsNone(desktop.find("ui native test 0 — 世界"))
                             self.assertEqual(desktop.size(window), (321, 234))
                             desktop.close_window(window)
                         stdout, stderr = process.communicate(timeout=5)

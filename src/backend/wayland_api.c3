@@ -1,5 +1,6 @@
 // ABI bindings loaded only when Wayland is selected. No Linux link dependency.
 module ui::backend @feat(LINUX);
+import std::os::env;
 import libc;
 
 struct WArray { usz size; usz alloc; void* data; }
@@ -158,6 +159,12 @@ alias XState = fn void*(void*);
 alias XMask = fn uint(void*, uint, uint, uint, uint, uint, uint);
 alias XSym = fn uint(void*, uint);
 alias XMod = fn int(void*, ZString, uint);
+alias XUtf8 = fn int(void*, uint, char*, usz);
+alias XRepeats = fn int(void*, uint);
+alias XComposeTable = fn void*(void*, ZString, int);
+alias XComposeState = fn void*(void*, int);
+alias XComposeStatus = fn int(void*);
+alias XComposeUtf8 = fn int(void*, char*, usz);
 struct WXkb
 {
 	void* library;
@@ -170,9 +177,22 @@ struct WXkb
 	XMask update_mask;
 	XSym sym;
 	XMod mod_active;
+	XUtf8 utf8;
+	XRepeats repeats;
+	XComposeTable compose_table_new;
+	XComposeState compose_state_new;
+	XRepeats compose_feed;
+	XComposeStatus compose_status;
+	XComposeUtf8 compose_utf8;
+	WVoid compose_reset;
+	WVoid compose_state_unref;
+	WVoid compose_table_unref;
 	void* context;
 	void* keymap;
 	void* state;
+	void* compose_table;
+	void* compose_state;
+	ulong compose_epoch;
 }
 
 fn void? WXkb.load(&self)
@@ -188,16 +208,63 @@ fn void? WXkb.load(&self)
 	@load_symbol(self.update_mask, self.library, "xkb_state_update_mask")!;
 	@load_symbol(self.sym, self.library, "xkb_state_key_get_one_sym")!;
 	@load_symbol(self.mod_active, self.library, "xkb_state_mod_name_is_active")!;
+	@load_symbol(self.utf8, self.library, "xkb_state_key_get_utf8")!;
+	@load_symbol(self.repeats, self.library, "xkb_keymap_key_repeats")!;
+	@load_symbol(self.compose_table_new, self.library, "xkb_compose_table_new_from_locale")!;
+	@load_symbol(self.compose_state_new, self.library, "xkb_compose_state_new")!;
+	@load_symbol(self.compose_feed, self.library, "xkb_compose_state_feed")!;
+	@load_symbol(self.compose_status, self.library, "xkb_compose_state_get_status")!;
+	@load_symbol(self.compose_utf8, self.library, "xkb_compose_state_get_utf8")!;
+	@load_symbol(self.compose_reset, self.library, "xkb_compose_state_reset")!;
+	@load_symbol(self.compose_state_unref, self.library, "xkb_compose_state_unref")!;
+	@load_symbol(self.compose_table_unref, self.library, "xkb_compose_table_unref")!;
 	self.context = self.context_new(0);
 	if (!self.context) return ui::PLATFORM_ERROR~;
+	@pool()
+	{
+		String locale = "C.UTF-8";
+		foreach (String name : { "LC_ALL", "LC_CTYPE", "LANG" })
+		{
+			String value = env::tget_var(name) ?? "";
+			if (value.len) { locale = value; break; }
+		}
+		self.compose_table = self.compose_table_new(self.context, locale.zstr_tcopy(), 0);
+		if (self.compose_table) self.compose_state = self.compose_state_new(self.compose_table, 0);
+	};
 }
 
 fn void WXkb.dispose(&self)
 {
+	if (self.compose_state) self.compose_state_unref(self.compose_state);
+	if (self.compose_table) self.compose_table_unref(self.compose_table);
 	if (self.state) self.state_unref(self.state);
 	if (self.keymap) self.keymap_unref(self.keymap);
 	if (self.context) self.context_unref(self.context);
 	if (self.library) (void)libc::dlclose(self.library);
+}
+
+fn bool WXkb.commit(&self, View* view, uint key, uint symbol)
+{
+	if (!self.state || !self.utf8) return false;
+	char[4097] buffer;
+	int length;
+	if (self.compose_state)
+	{
+		if (self.compose_epoch != view.focus_epoch) self.compose_reset(self.compose_state);
+		self.compose_epoch = view.focus_epoch;
+		(void)self.compose_feed(self.compose_state, symbol);
+		int status = self.compose_status(self.compose_state);
+		if (status == 1) return false; // composing: no committed text yet.
+		if (status == 3) { self.compose_reset(self.compose_state); return false; }
+		if (status == 2)
+		{
+			length = self.compose_utf8(self.compose_state, &buffer[0], @sizeof(buffer));
+			self.compose_reset(self.compose_state);
+		}
+		else { length = self.utf8(self.state, key, &buffer[0], @sizeof(buffer)); }
+	}
+	else { length = self.utf8(self.state, key, &buffer[0], @sizeof(buffer)); }
+	return length > 0 && length < (int)@sizeof(buffer) && view.text_input((String)buffer[:length]);
 }
 
 extern fn void* mmap(void*, usz, int, int, int, iptr);
