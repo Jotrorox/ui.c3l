@@ -47,6 +47,7 @@ struct MacWindow
 	void* application;
 	void* window;
 	void* native_view;
+	void* pasteboard; // Null uses the system board; tests can use a private board.
 	View* view;
 	MacCanvas canvas;
 	double wheel_remainder;
@@ -172,6 +173,9 @@ fn void mac_key(View* view, bool down, ushort key, bool repeat, ulong modifiers)
 		(modifiers & (1 << 20)) && !(modifiers & ((1 << 18) | (1 << 19))))
 	{
 		if (key == 0) action = SELECT_ALL; // Command-A.
+		if (key == 8) action = COPY;
+		if (key == 7) action = CUT;
+		if (key == 9) action = PASTE;
 		if (key == 123) action = SCROLL_HOME;
 		if (key == 124) action = SCROLL_END;
 	}
@@ -475,6 +479,10 @@ fn ObjcClass? init_mac_class() @private
 		!objc::class_addMethod(cls, objc::sel_getUid("drawRect:"), &draw_mac_view, "v@:{CGRect={CGPoint=dd}{CGSize=dd}}")) return ui::PLATFORM_ERROR~;
 	if (!objc::class_addMethod(cls, objc::sel_getUid("performKeyEquivalent:"), &mac_shortcut,
 		env::AARCH64 ? "B@:@" : "c@:@")) return ui::PLATFORM_ERROR~;
+	foreach (ZString name : { "copy:", "cut:", "paste:" })
+	{
+		if (!objc::class_addMethod(cls, objc::sel_getUid(name), &mac_clipboard_action, "v@:@")) return ui::PLATFORM_ERROR~;
+	}
 	if (!objc::class_addMethod(cls, objc::sel_getUid("insertText:"), &mac_insert_legacy, "v@:@") ||
 		!objc::class_addMethod(cls, objc::sel_getUid("insertText:replacementRange:"), &mac_insert_text, "v@:@{_NSRange=QQ}") ||
 		!objc::class_addMethod(cls, objc::sel_getUid("setMarkedText:selectedRange:replacementRange:"), &mac_mark_text, "v@:@{_NSRange=QQ}{_NSRange=QQ}") ||
@@ -558,6 +566,7 @@ fn void? open(WindowOptions options, View* view = null)
 		if (view)
 		{
 			window.canvas.view = view;
+			view.set_clipboard(&mac_clipboard_write, &mac_clipboard_read, &window);
 			window.canvas.init(view.get_theme())!;
 			void* tracking = objc::msg_send(objc::alloc(objc::getClass("NSTrackingArea")), MacTrackingInit,
 				"initWithRect:options:owner:userInfo:", frame, 0x623UL, window.native_view, null);

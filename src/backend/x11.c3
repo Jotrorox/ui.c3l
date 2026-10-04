@@ -297,7 +297,12 @@ fn void? open_x11(WindowOptions options, View* view = null) => @pool()
 	uint utf8 = intern_atom(&connection, "UTF8_STRING")!;
 	XCanvas canvas = { .connection = &connection, .setup = setup, .view = view };
 	defer canvas.dispose();
-	if (view) canvas.init()!;
+	if (view)
+	{
+		canvas.init()!;
+		canvas.init_clipboard()!;
+		view.set_clipboard(&x11_clipboard_write, &x11_clipboard_read, &canvas);
+	}
 	char[40] create;
 	create[0] = 1; // CreateWindow; depth and visual inherit from the root.
 	write16(create[..], 2, 10);
@@ -309,7 +314,7 @@ fn void? open_x11(WindowOptions options, View* view = null) => @pool()
 	write32(create[..], 28, 2 | 0x800); // background-pixel, event-mask
 	write32(create[..], 32, setup.white_pixel);
 	// Structure, exposure, mouse, keyboard and focus events for retained views.
-	write32(create[..], 36, view ? 0x22c07f : 1 << 17);
+	write32(create[..], 36, view ? 0x62c07f : 1 << 17); // Includes PropertyChange for INCR.
 	connection.request(create[..])!;
 	char[4] atom;
 	write32(atom[..], 0, delete_window);

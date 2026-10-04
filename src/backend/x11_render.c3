@@ -1,11 +1,12 @@
 module ui::backend @feat(LINUX);
-import std::math;
+import std::math, libc;
 
 // Core X11 fonts provide a dependency-free first renderer. Glyph metrics are
 // loaded once. Complex shaping and font fallback can replace this adapter later.
 struct XCanvas
 {
 	XConnection* connection;
+	XClipboard clipboard;
 	Setup setup;
 	uint font;
 	uint gc;
@@ -38,6 +39,7 @@ struct XQueuedEvent
 
 fn void XCanvas.dispose(&self)
 {
+	self.clipboard.owned.free(mem);
 	if (self.font_owned) mem::free(self.font_data.ptr);
 	mem::free(self.keymap.ptr);
 	while (self.first_event)
@@ -50,7 +52,34 @@ fn void XCanvas.dispose(&self)
 
 fn char[32]? XCanvas.next_event(&self)
 {
-	if (!self.first_event) return receive_message(self.connection.fd);
+	if (!self.first_event)
+	{
+		if (self.clipboard.pending)
+		{
+			WPollFd fd = { self.connection.fd, 1, 0 };
+			int timeout = (int)math::clamp(self.clipboard.deadline - wayland_time(), 0L, 5000L);
+			int ready = poll(&fd, 1, timeout);
+			if (!ready)
+			{
+				self.clipboard.pending = false;
+				self.delete_clipboard_property()!;
+			}
+			else if (ready < 0 && libc::errno() != EINTR) return ui::CONNECTION_FAILED~;
+		}
+		while (true)
+		{
+			char[32] message;
+			receive_all(self.connection.fd, message[..])!;
+			uint type = message[0] & 0x7f;
+			if (!type)
+			{
+				if (self.clipboard_error(message[..])) continue;
+				return ui::PROTOCOL_ERROR~;
+			}
+			if (type == 1 || type == 35) discard_payload(self.connection.fd, read32(message[..], 4))!;
+			return message;
+		}
+	}
 	XQueuedEvent* event = self.first_event;
 	char[32] result = event.data;
 	self.first_event = event.next;
@@ -78,7 +107,11 @@ fn void? XCanvas.refresh_keymap(&self)
 		char[32] header;
 		receive_all(self.connection.fd, header[..])!;
 		uint type = header[0] & 0x7f;
-		if (type == 0) return ui::PROTOCOL_ERROR~;
+		if (type == 0)
+		{
+			if (self.clipboard_error(header[..])) continue;
+			return ui::PROTOCOL_ERROR~;
+		}
 		if (type == 1)
 		{
 			if (header[0] != 1 || read16(header[..], 2) != self.connection.sequence ||
@@ -131,7 +164,11 @@ fn char[]? XCanvas.read_reply(&self, uint limit)
 		char[32] header;
 		receive_all(self.connection.fd, header[..])!;
 		uint type = header[0] & 0x7f;
-		if (type == 0) return ui::PROTOCOL_ERROR~;
+		if (type == 0)
+		{
+			if (self.clipboard_error(header[..])) continue;
+			return ui::PROTOCOL_ERROR~;
+		}
 		if (type == 1)
 		{
 			uint words = read32(header[..], 4);
@@ -446,6 +483,8 @@ fn void x11_commit(View* view, uint symbol) @private => @pool()
 fn void? XCanvas.event(&self, View* view, char[] event)
 {
 	uint type = event[0] & 0x7f;
+	if (type >= 28 && type <= 31) return self.clipboard_event(event);
+	if (type >= 2 && type <= 8) self.clipboard.time = read32(event, 4);
 	int x = (short)read16(event, 24);
 	int y = (short)read16(event, 26);
 	switch (type)
@@ -515,8 +554,7 @@ fn void? XCanvas.event(&self, View* view, char[] event)
 			uint symbol = self.key_symbol(event[1], modifiers);
 			ControlKey action = keysym_control(symbol);
 			bool shortcut = (modifiers & (4 | 8 | 64)) != 0; // Ctrl, Alt, Super.
-			if (shortcut) action = (modifiers & 4) && !(modifiers & (8 | 64)) &&
-				(symbol == 'a' || symbol == 'A') ? SELECT_ALL : NONE;
+			if (shortcut) action = (modifiers & 4) && !(modifiers & (8 | 64)) ? clipboard_keysym(symbol) : NONE;
 			view.key_down(event[1], action, repeat, (modifiers & 1) != 0);
 			if (!shortcut && epoch == view.focus_epoch) x11_commit(view, symbol);
 		default:

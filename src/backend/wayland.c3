@@ -9,6 +9,7 @@ struct WaylandWindow
 	WShell shell;
 	WXkb xkb;
 	WCanvas canvas;
+	WClipboard clipboard;
 	View* view;
 	void* display;
 	void* registry;
@@ -126,6 +127,7 @@ fn void WaylandWindow.dispose(&self)
 	// Destroy every local proxy before disconnecting, also after partial init.
 	if (self.api.destroy)
 	{
+		self.dispose_clipboard();
 		foreach (&buffer : self.buffers) buffer.dispose(&self.api);
 		self.cursor.dispose(&self.api);
 		foreach (proxy : (void*[14]){ self.frame, self.decoration, self.decoration_manager, self.toplevel, self.xsurface, self.surface,
@@ -166,6 +168,7 @@ fn void? WaylandWindow.run(&self, WindowOptions options) => @pool()
 	self.request(self.toplevel, 3, app_id[..]);
 	if (self.view)
 	{
+		self.view.set_clipboard(&wayland_clipboard_write, &wayland_clipboard_read, self);
 		self.view.set_measurer(&measure_wayland_text, &self.canvas);
 		self.view.update();
 	}
@@ -175,6 +178,8 @@ fn void? WaylandWindow.run(&self, WindowOptions options) => @pool()
 	while (!self.closed)
 	{
 		self.check()!;
+		self.read_clipboard();
+		self.send_clipboard();
 		self.paint()!;
 		while (self.api.prepare_read(self.display) != 0)
 		{
@@ -190,22 +195,39 @@ fn void? WaylandWindow.run(&self, WindowOptions options) => @pool()
 			self.api.cancel_read(self.display);
 			return ui::CONNECTION_FAILED~;
 		}
-		WPollFd fd = { self.api.get_fd(self.display), (short)(1 | (blocked ? 4 : 0)), 0 };
+		WPollFd[18] fds;
+		fds[0] = { self.api.get_fd(self.display), (short)(1 | (blocked ? 4 : 0)), 0 };
+		usz count = 1;
 		int timeout = self.repeating ? (int)math::clamp(self.repeat_at - wayland_time(), 0L, (long)int::max) : -1;
-		int ready = poll(&fd, 1, timeout);
+		long now = wayland_time();
+		if (self.clipboard.reading)
+		{
+			fds[count++] = { self.clipboard.fd, 1, 0 };
+			int remaining = (int)math::clamp(self.clipboard.deadline - now, 0L, 5000L);
+			timeout = timeout < 0 ? remaining : math::min(timeout, remaining);
+		}
+		for (WSend* transfer = self.clipboard.sends; transfer; transfer = transfer.next)
+		{
+			fds[count++] = { transfer.fd, 4, 0 };
+			int remaining = (int)math::clamp(transfer.deadline - now, 0L, 5000L);
+			timeout = timeout < 0 ? remaining : math::min(timeout, remaining);
+		}
+		int ready = poll(&fds[0], count, timeout);
 		if (ready < 0)
 		{
 			self.api.cancel_read(self.display);
 			if (libc::errno() == EINTR) continue;
 			return ui::CONNECTION_FAILED~;
 		}
-		if (fd.revents & (1 | 8 | 16))
+		if (fds[0].revents & (1 | 8 | 16))
 		{
 			if (self.api.read_events(self.display) < 0) self.check()!;
 		}
 		else { self.api.cancel_read(self.display); }
 		if (self.api.dispatch_pending(self.display) < 0) self.check()!;
 		self.check()!;
+		self.read_clipboard();
+		self.send_clipboard();
 		if (self.repeating && !self.closed && wayland_time() >= self.repeat_at)
 		{
 			self.key(self.repeat_key, true, true);
@@ -236,6 +258,13 @@ fn void? WaylandWindow.global(&self, uint name, String iface, uint version)
 	{
 		self.seat = self.bind(name, self.api.seat, math::min(version, 5u))!;
 		self.seat_name = name;
+		self.clipboard_device()!;
+	}
+	else if (iface == "wl_data_device_manager" && !self.clipboard.manager && self.view)
+	{
+		self.clipboard.manager = self.bind(name, self.api.data_manager, 1)!;
+		self.clipboard.manager_name = name;
+		self.clipboard_device()!;
 	}
 	else if (iface == "zxdg_decoration_manager_v1" && !self.decoration_manager)
 	{
@@ -271,6 +300,9 @@ fn void? WaylandWindow.capabilities(&self, uint capabilities)
 		else { self.api.destroy(self.keyboard); }
 		self.keyboard = null;
 		self.repeating = false;
+		self.clipboard.serial = 0;
+		self.cancel_clipboard_read();
+		self.drop_offer(self.clipboard.selection);
 		if (self.view) self.view.blur();
 	}
 }
@@ -327,7 +359,8 @@ fn void WaylandWindow.key(&self, uint key, bool down, bool repeat = false)
 	bool control = self.xkb.state && self.xkb.mod_active(self.xkb.state, "Control", 1 << 3) > 0;
 	bool shortcut = control || (self.xkb.state && (self.xkb.mod_active(self.xkb.state, "Mod1", 1 << 3) > 0 ||
 		self.xkb.mod_active(self.xkb.state, "Mod4", 1 << 3) > 0));
-	if (shortcut) action = control && (sym == 'a' || sym == 'A') ? SELECT_ALL : NONE;
+	if (shortcut) action = control && self.xkb.mod_active(self.xkb.state, "Mod1", 1 << 3) <= 0 &&
+		self.xkb.mod_active(self.xkb.state, "Mod4", 1 << 3) <= 0 ? clipboard_keysym(sym) : NONE;
 	if (self.view.focused && self.view.focused.kind == TEXT_FIELD && action == BACKSPACE &&
 		self.xkb.compose_state && self.xkb.compose_status(self.xkb.compose_state) == 1)
 	{
@@ -407,6 +440,7 @@ fn void? WaylandWindow.show_cursor(&self, uint serial)
 
 fn void? WaylandWindow.event(&self, void* target, uint opcode, WArg* args)
 {
+	if (self.is_clipboard_proxy(target)) return self.clipboard_event(target, opcode, args);
 	if (target == self.registry)
 	{
 		if (opcode == 0) return self.global(args[0].u, args[1].s.str_view(), args[2].u);
@@ -414,9 +448,15 @@ fn void? WaylandWindow.event(&self, void* target, uint opcode, WArg* args)
 		if (name == self.seat_name && self.seat)
 		{
 			self.capabilities(0)!;
+			self.dispose_clipboard(false);
 			self.api.destroy(self.seat);
 			self.seat = null;
 			self.seat_name = 0;
+		}
+		else if (name == self.clipboard.manager_name && self.clipboard.manager)
+		{
+			self.dispose_clipboard();
+			self.clipboard.manager_name = 0;
 		}
 		else if (name == self.compositor_name || name == self.shm_name || name == self.base_name)
 		{
@@ -479,6 +519,7 @@ fn void? WaylandWindow.event(&self, void* target, uint opcode, WArg* args)
 				if (self.view && self.pointer_inside) self.view.pointer_move(self.pointer_x, self.pointer_y);
 			case 3: // BTN_LEFT
 				if (!self.view || !self.pointer_inside || args[2].u != 0x110) return;
+				if (args[3].u == 1) self.clipboard.serial = args[0].u;
 				if (args[3].u == 1) { self.view.pointer_down(self.pointer_x, self.pointer_y,
 					self.xkb.state && self.xkb.mod_active(self.xkb.state, "Shift", 1 << 3) > 0); }
 				else { self.view.pointer_up(self.pointer_x, self.pointer_y); }
@@ -504,8 +545,15 @@ fn void? WaylandWindow.event(&self, void* target, uint opcode, WArg* args)
 				uint[] keys = ((uint*)args[2].a.data)[:args[2].a.size / 4];
 				foreach (key : keys) if (key < 256) self.view.held_keys[key] = true;
 				self.repeating = false;
-			case 2: self.repeating = false; if (self.view) self.view.blur();
-			case 3: self.key(args[2].u, args[3].u != 0);
+			case 2:
+				self.repeating = false;
+				self.clipboard.serial = 0;
+				self.cancel_clipboard_read();
+				self.drop_offer(self.clipboard.selection);
+				if (self.view) self.view.blur();
+			case 3:
+				if (args[3].u) self.clipboard.serial = args[0].u;
+				self.key(args[2].u, args[3].u != 0);
 			case 4:
 				self.depressed = args[1].u;
 				self.latched = args[2].u;
@@ -532,6 +580,13 @@ fn int wayland_dispatch(void* context, void* target, uint opcode, WMessage* mess
 	if (window.failure)
 	{
 		if (target == window.keyboard && opcode == 0) (void)close(args[1].i);
+		if (opcode == 1)
+		{
+			for (WSource* source = window.clipboard.sources; source; source = source.next)
+			{
+				if (target == source.proxy) { (void)close(args[1].i); break; }
+			}
+		}
 		return 0;
 	}
 	if (catch failure = window.event(target, opcode, args)) window.failure = failure;

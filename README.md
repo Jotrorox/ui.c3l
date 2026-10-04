@@ -124,7 +124,14 @@ caret)` rejects offsets outside the string or inside a scalar's encoding.
 Left/Right and Backspace/Delete operate on Unicode scalars; combining marks can
 be selected/deleted individually. Unshifted arrows collapse a selection to its
 corresponding edge, Shift extends from the anchor, Home/End move within the field,
-and Ctrl-A (Command-A on macOS) selects all. Mouse clicks place the caret,
+and Ctrl-A (Command-A on macOS) selects all. Ctrl-C/X/V (Command-C/X/V on macOS)
+copy, cut, and paste through the native clipboard. Copy and cut use only the
+selected text; an empty selection leaves the clipboard alone. Cut deletes only
+after the clipboard accepts the copy. Paste replaces the selection through the
+same atomic UTF-8, single-line, and 4096-byte validation as committed text, without
+truncation. Invalid, empty, unavailable, or oversized clipboard text leaves the
+content and selection intact. Clipboard shortcuts act once per key press.
+Mouse clicks place the caret,
 Shift-click extends from the anchor, and captured dragging extends selection,
 including outside the control. Focused selection uses inverted text and a steady
 caret. Tab reveals fields in scroll
@@ -148,8 +155,25 @@ is discarded on focus changes. X11's core adapter resolves Shift, Latin-1
 CapsLock, and Mod5's second group, then converts Latin-1/Unicode keysyms; XIM,
 Compose, and legacy non-Latin keysyms are not supported there yet. Composition
 preview is not drawn in this milestone, and Wayland text-input/IME protocols,
-clipboard commands, undo, word/grapheme navigation, and bidirectional caret
-layout remain future work.
+undo, word/grapheme navigation, and bidirectional caret layout remain future work.
+
+macOS uses `NSPasteboard` strings and Windows uses `CF_UNICODETEXT`, validating
+UTF-16 before converting it. X11 owns the `CLIPBOARD` selection, serves
+`TARGETS`, `TIMESTAMP`, `UTF8_STRING`, and representable Latin-1 `STRING`, and
+receives direct or incremental (`INCR`) transfers. Wayland uses the seat's
+`wl_data_device_manager` when advertised, preferring `text/plain;charset=utf-8`
+and accepting UTF-8 `text/plain`. Linux transfers keep the event loop responsive
+and expire after five seconds. Delayed pastes are discarded after a focus,
+selection, or text change. On Linux, copied data is served while the native
+window remains open; clipboard managers may retain it after closing.
+
+Custom event loops can install `set_clipboard(write, read, context)` callbacks
+and dispatch `clipboard_command(COPY/CUT/PASTE)` or corresponding `ControlKey`
+values. The write callback returns whether it accepted the selected UTF-8
+snapshot. The read callback receives a `ClipboardRequest` to retain and complete
+with `paste_text(text, request)` on the UI thread; this checks the original
+focus and edit lifetime before applying the normal text-input validation.
+Native windows install their providers for the duration of `open()`.
 
 Native input references: [AppKit text interpretation](https://developer.apple.com/documentation/appkit/nsresponder/interpretkeyevents(_:)),
 [Windows character messages](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-char),

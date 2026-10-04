@@ -84,6 +84,8 @@ class Compositor:
         self.requested_sizes = []
         self.pongs = []
         self.decoration_modes = []
+        self.data_device = None
+        self.clipboard_receives = []
 
     def send(self, target, opcode, payload=b'', fd=None):
         packet = uints(target, ((8 + len(payload)) << 16) | opcode) + payload
@@ -141,6 +143,8 @@ class Compositor:
                         self.objects[new_id] = 'registry'
                         globals = [(10, 'wl_compositor', 4), (11, 'wl_shm', 1),
                                    (12, 'xdg_wm_base', 1), (13, 'wl_seat', 5)]
+                        if self.widgets:
+                            globals.append((15, 'wl_data_device_manager', 1))
                         if self.scenario in ('decorations', 'decorations_client'):
                             globals.append((14, 'zxdg_decoration_manager_v1', 1))
                         for name, iface, version in globals:
@@ -168,6 +172,26 @@ class Compositor:
                     self.objects[new_id] = 'wl_surface'
                     if self.surface is None:
                         self.surface = new_id
+                elif kind == 'wl_data_device_manager':
+                    new_id, = struct.unpack_from('<I', payload)
+                    if opcode == 1:
+                        self.data_device = new_id
+                        self.objects[new_id] = 'wl_data_device'
+                    else:
+                        self.objects[new_id] = 'wl_data_source'
+                elif kind == 'wl_data_offer':
+                    if opcode == 1:
+                        length, = struct.unpack_from('<I', payload)
+                        mime = payload[4:4 + length - 1].decode()
+                        self.clipboard_receives.append(mime)
+                        fd = self.fds.popleft()
+                        try:
+                            data = {'clipboard': '世界'.encode(), 'clipboard_invalid': b'line\nbreak',
+                                    'clipboard_utf8': b'\xff', 'clipboard_large': b'x' * 4097}[self.scenario]
+                            os.write(fd, data)
+                        finally:
+                            os.close(fd)
+                        self.send(self.top, 1)
                 elif kind == 'xdg_wm_base':
                     if opcode == 2:
                         new_id, surface = struct.unpack('<II', payload)
@@ -272,6 +296,21 @@ class Compositor:
             self.send(buffer, 0)
         else:
             self.held_buffers[buffer] = image
+        if self.scenario.startswith('clipboard'):
+            if self.commits == 1:
+                offer = 0xff000001
+                self.objects[offer] = 'wl_data_offer'
+                self.send(self.data_device, 0, uints(offer))
+                self.send(offer, 0, string('text/plain'))
+                self.send(offer, 0, string('text/plain;charset=utf-8'))
+                self.send(self.data_device, 5, uints(offer))
+                self.send(self.keyboard, 1, uints(40, self.surface) + wire_array())
+                self.cycle(15)  # Focus the field.
+                self.send(self.keyboard, 4, uints(40, 4, 0, 0, 0))  # Control.
+                self.cycle(30)  # Ctrl-A.
+                self.cycle(47)  # Ctrl-V.
+                self.send(self.keyboard, 4, uints(40, 0, 0, 0, 0))
+            return
         if self.commits == 1 and self.scenario in ('resize', 'busy', 'decorations_client'):
             self.configure(400, 300, 78)
         elif self.commits == 1 and self.scenario == 'input':
@@ -305,6 +344,7 @@ class WaylandIntegrationTests(unittest.TestCase):
         cls.directory = tempfile.TemporaryDirectory(prefix='ui-wayland-build-')
         cls.blank = compile_fixture('blank_window', cls.directory.name)
         cls.widgets = compile_fixture('wayland_window', cls.directory.name)
+        cls.clipboard = compile_fixture('clipboard_window', cls.directory.name)
 
     @classmethod
     def tearDownClass(cls):
@@ -346,7 +386,8 @@ class WaylandIntegrationTests(unittest.TestCase):
                 thread = threading.Thread(target=serve, daemon=True)
             thread.start()
             try:
-                result = subprocess.run([str(self.widgets if widgets else self.blank)], env=environment,
+                binary = self.clipboard if scenario.startswith('clipboard') else self.widgets if widgets else self.blank
+                result = subprocess.run([str(binary)], env=environment,
                                         pass_fds=pass_fds, capture_output=True, text=True, timeout=10)
             finally:
                 if client is not None:
@@ -387,6 +428,17 @@ class WaylandIntegrationTests(unittest.TestCase):
     def test_inherited_socket_is_selected_without_wayland_display(self):
         result, _ = self.run_compositor(inherited=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_clipboard_utf8_selection_replacement_and_atomic_rejection(self):
+        for scenario in ('clipboard', 'clipboard_invalid', 'clipboard_utf8', 'clipboard_large'):
+            with self.subTest(scenario=scenario):
+                result, driver = self.run_compositor(scenario, widgets=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(driver.clipboard_receives, ['text/plain;charset=utf-8'])
+                final = json.loads(result.stdout.splitlines()[-1])
+                self.assertEqual(final['text'], '世界' if scenario == 'clipboard' else 'aé👋z')
+                self.assertEqual(final['changes'], 1 if scenario == 'clipboard' else 0)
+                self.assertEqual((final['anchor'], final['caret']), (6, 6) if scenario == 'clipboard' else (0, 8))
 
     def test_requests_server_decorations_when_supported(self):
         result, driver = self.run_compositor('decorations')

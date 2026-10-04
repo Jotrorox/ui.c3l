@@ -30,6 +30,10 @@ struct View
 	Widget* pressed;
 	Widget* focused;
 	ulong focus_epoch; // Invalidates native partial text commits on focus changes.
+	ulong edit_epoch; // Invalidates delayed clipboard transfers after edits/selections.
+	ClipboardWrite clipboard_write;
+	ClipboardRead clipboard_read;
+	void* clipboard_context;
 	Widget* keyboard_scroll; // Retains the receiver when scrolling clips focus.
 	Widget* scroll_pressed; // Cleared before its target can be detached or freed.
 	bool scroll_press_active; // Release stays consumed even after cancellation.
@@ -155,6 +159,7 @@ fn void? View.open(&self, String title = "ui", int width = 800, int height = 600
 	defer self.blur();
 	self.resize(width, height);
 	defer self.set_measurer(null); // Native metric context is scoped to open().
+	defer self.set_clipboard(null, null);
 	return backend::open(options, self);
 }
 

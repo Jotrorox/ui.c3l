@@ -68,6 +68,7 @@ fn bool Widget.select(&self, sz anchor, sz caret)
 	if (!text_boundary(self.content, anchor) || !text_boundary(self.content, caret)) return false;
 	if (self.text_selection.anchor == anchor && self.text_selection.caret == caret) return true;
 	self.text_selection = { anchor, caret };
+	self.owner.edit_epoch++;
 	self.reveal_caret();
 	self.owner.invalidate(self.visible);
 	return true;
@@ -130,6 +131,7 @@ fn void replace_field_selection(Widget* self, String text) @private
 	bool changed = next != self.content;
 	assign_text(self, next);
 	self.text_selection = { start + text.len, start + text.len };
+	self.owner.edit_epoch++;
 	self.reveal_caret();
 	self.owner.invalidate(self.visible);
 	if (!changed || !self.on_text_change) return;

@@ -57,6 +57,10 @@ struct WApi
 	WInterface* seat;
 	WInterface* pointer;
 	WInterface* keyboard;
+	WInterface* data_manager;
+	WInterface* data_device;
+	WInterface* data_source;
+	WInterface* data_offer;
 }
 
 fn void? WApi.load(&self)
@@ -87,6 +91,10 @@ fn void? WApi.load(&self)
 	@load_symbol(self.seat, self.library, "wl_seat_interface")!;
 	@load_symbol(self.pointer, self.library, "wl_pointer_interface")!;
 	@load_symbol(self.keyboard, self.library, "wl_keyboard_interface")!;
+	@load_symbol(self.data_manager, self.library, "wl_data_device_manager_interface")!;
+	@load_symbol(self.data_device, self.library, "wl_data_device_interface")!;
+	@load_symbol(self.data_source, self.library, "wl_data_source_interface")!;
+	@load_symbol(self.data_offer, self.library, "wl_data_offer_interface")!;
 }
 
 // Stable xdg-shell v1 metadata, matching wayland-protocols/xdg-shell.xml.

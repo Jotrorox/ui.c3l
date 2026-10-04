@@ -217,7 +217,11 @@ fn void assign_text(Widget* self, String text) @private
 	String copy = text.copy(mem);
 	self.content.free(mem);
 	self.content = copy;
-	if (self.kind == TEXT_FIELD) self.text_selection = { text.len, text.len };
+	if (self.kind == TEXT_FIELD)
+	{
+		self.text_selection = { text.len, text.len };
+		self.owner.edit_epoch++;
+	}
 	self.request_measure();
 	self.owner.invalidate(self.visible);
 }
@@ -485,9 +489,10 @@ fn void View.focus_next(&self, bool reverse = false)
 
 // Native adapters supply an identity and repeat metadata. Keep held keys across
 // widget focus changes/removal: held activation cannot target a replacement.
-// Tab, scrolling and editing repeat deliberately; activation is initial-down only.
+// Tab, scrolling and editing repeat deliberately; activation and clipboard
+// shortcuts act on initial-down only.
 enum ControlKey { NONE, TAB, ACTIVATE, PAGE_UP, PAGE_DOWN, SCROLL_HOME, SCROLL_END,
-	LEFT, RIGHT, BACKSPACE, DELETE, SELECT_ALL }
+	LEFT, RIGHT, BACKSPACE, DELETE, SELECT_ALL, COPY, CUT, PASTE }
 
 fn void View.key_down(&self, char identity, ControlKey action, bool repeat = false, bool reverse = false)
 {
@@ -495,6 +500,11 @@ fn void View.key_down(&self, char identity, ControlKey action, bool repeat = fal
 	self.update();
 	bool held = self.held_keys[identity];
 	self.held_keys[identity] = true; // Set before callbacks, including self-removal.
+	if (action == COPY || action == CUT || action == PASTE)
+	{
+		if (!held && !repeat) self.clipboard_command(action);
+		return;
+	}
 	if (self.focused && self.focused.kind == TEXT_FIELD && field_key(self.focused, action, reverse)) return;
 	if (action == TAB) self.focus_next(reverse);
 	if (action == ACTIVATE && !held && !repeat) self.activate_focused();

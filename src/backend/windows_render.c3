@@ -146,7 +146,18 @@ fn void win_key(View* view, bool down, uint key, sz flags, bool shift,
 		case 46: action = DELETE;
 		default:
 	}
-	if (control || alt) action = control && !alt && key == 65 ? SELECT_ALL : NONE;
+	if (control || alt)
+	{
+		action = NONE;
+		if (control && !alt) switch (key)
+		{
+			case 65: action = SELECT_ALL;
+			case 67: action = COPY;
+			case 88: action = CUT;
+			case 86: action = PASTE;
+			default:
+		}
+	}
 	view.key_down((char)key, action, (flags & (1 << 30)) != 0, shift);
 }
 
@@ -271,6 +282,7 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 			view.held_keys[13] = get_key_state(13) < 0;
 			view.held_keys[32] = get_key_state(32) < 0;
 		case 0x100: // WM_KEYDOWN; bit 30 survives even a lost initial press.
+			if (get_key_state(17) < 0 && (wparam == 67 || wparam == 88 || wparam == 86)) window.text_surrogate = 0;
 			win_key(view, true, (uint)wparam, lparam, get_key_state(16) < 0,
 				get_key_state(17) < 0, get_key_state(18) < 0);
 		case 0x102: // WM_CHAR (TranslateMessage handles keyboard layouts/dead keys).
@@ -280,6 +292,11 @@ fn bool dispatch_widget_message(WinWindow* window, uint message, Win32_WPARAM wp
 		case 0x105: // WM_SYSKEYUP: Alt pressed during a hold can change release type.
 			win_key(view, false, (uint)wparam, lparam, false);
 			return false; // Preserve DefWindowProc's system-key behavior.
+		case 0x300: // WM_CUT / WM_COPY / WM_PASTE from native commands.
+		case 0x301:
+		case 0x302:
+			window.text_surrogate = 0;
+			view.clipboard_command(message == 0x300 ? CUT : message == 0x301 ? COPY : PASTE);
 		default:
 			return false;
 	}

@@ -59,6 +59,7 @@ fn void? open(WindowOptions options, View* view = null) => @pool()
 	win32::setWindowLongPtrW(hwnd, win32::GWLP_USERDATA, (Win32_LONG_PTR)&window);
 	if (view)
 	{
+		view.set_clipboard(&win_clipboard_write, &win_clipboard_read, &window);
 		view.set_measurer(&measure_wintext, &window.canvas);
 		view.update();
 		view.invalidate({ 0, 0, view.width, view.height });

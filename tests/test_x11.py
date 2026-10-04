@@ -113,7 +113,9 @@ class X11IntegrationTests(unittest.TestCase):
                         for byte in setup_reply():
                             connection.sendall(bytes([byte]))
                         atoms = {b"WM_PROTOCOLS": 100, b"WM_DELETE_WINDOW": 101,
-                                 b"_NET_WM_NAME": 102, b"UTF8_STRING": 103}
+                                 b"_NET_WM_NAME": 102, b"UTF8_STRING": 103,
+                                 b"CLIPBOARD": 104, b"TARGETS": 105, b"TIMESTAMP": 106,
+                                 b"INCR": 107, b"UI_C3_CLIPBOARD": 108}
                         properties = {}
                         window = None
                         sequence = 0
@@ -138,7 +140,7 @@ class X11IntegrationTests(unittest.TestCase):
                                 self.assertEqual((window, parent), (0x200001, 0x100))
                                 self.assertEqual(struct.unpack_from("<HH", request, 16), (800, 600))
                                 self.assertEqual(struct.unpack_from("<III", request, 28),
-                                                 (0x802, 0xFFFFFF, 0x22C07F if widgets else 1 << 17))
+                                                 (0x802, 0xFFFFFF, 0x62C07F if widgets else 1 << 17))
                             elif opcode == 49 and widgets:  # ListFonts: exercise fixed fallback.
                                 self.assertEqual(struct.unpack_from("<H", request, 4)[0], 1)
                                 self.assertIn(b"-14-", request[8:])
