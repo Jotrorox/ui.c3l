@@ -25,6 +25,9 @@ jobs:
             flags: -O0
           - profile: release
             flags: -O3
+    env:
+      UI_TEST_TARGET: ${{ matrix.target }}
+      UI_TEST_OPTIMIZATION: ${{ matrix.profile }}
     defaults:
       run:
         working-directory: ui.c3l
@@ -47,6 +50,8 @@ jobs:
         run: |
           c3c build --path examples/window --target "${{ matrix.target }}" --linker=cc ${{ matrix.flags }}
           c3c build --path examples/search --target "${{ matrix.target }}" --linker=cc ${{ matrix.flags }}
+      - name: Native AppKit resize, focus, capture, and reopening checks
+        run: python3 scripts/test-macos.py
   linux:
     name: Linux (${{ matrix.arch }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.runner }}

@@ -516,10 +516,19 @@ fn void? open(WindowOptions options, View* view = null)
 		if (!window.application) return ui::DISPLAY_UNAVAILABLE~;
 		long policy = objc::msg_send(window.application, MacInteger, "activationPolicy");
 		if (policy == 2) (void)objc::msg_send(window.application, MacBoolInteger, "setActivationPolicy:", 0L);
-		defer { if (policy == 2) (void)objc::msg_send(window.application, MacBoolInteger, "setActivationPolicy:", policy); }
+		defer
+		{
+			if (policy == 2 && !mac_launched)
+			{
+				(void)objc::msg_send(window.application, MacBoolInteger, "setActivationPolicy:", policy);
+			}
+		}
 		if (!mac_launched && !objc::msg_send(window.application, MacBool, "isRunning"))
 		{
 			objc::msg_send(window.application, MacVoid, "finishLaunching");
+			// An application launched by this backend stays eligible for focus.
+			// Restoring prohibited policy between windows queues a deactivation
+			// that can steal key status from the next window after it opens.
 			mac_launched = true;
 		}
 		ObjcClass cls = init_mac_class()!;

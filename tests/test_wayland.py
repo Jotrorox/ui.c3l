@@ -141,7 +141,7 @@ class Compositor:
                         self.objects[new_id] = 'registry'
                         globals = [(10, 'wl_compositor', 4), (11, 'wl_shm', 1),
                                    (12, 'xdg_wm_base', 1), (13, 'wl_seat', 5)]
-                        if self.scenario == 'decorations':
+                        if self.scenario in ('decorations', 'decorations_client'):
                             globals.append((14, 'zxdg_decoration_manager_v1', 1))
                         for name, iface, version in globals:
                             if self.missing and name == 12:
@@ -191,7 +191,9 @@ class Compositor:
                     new_id, top = struct.unpack('<II', payload)
                     assert top == self.top
                     self.objects[new_id] = 'zxdg_toplevel_decoration_v1'
-                    self.send(new_id, 0, uints(2))
+                    # A compositor may choose client-side mode even when the
+                    # client requests server decorations.
+                    self.send(new_id, 0, uints(1 if self.scenario == 'decorations_client' else 2))
                 elif kind == 'zxdg_toplevel_decoration_v1':
                     self.decoration_modes.append(struct.unpack('<I', payload)[0])
                 elif kind == 'wl_seat':
@@ -254,7 +256,7 @@ class Compositor:
 
     def commit(self):
         self.commits += 1
-        assert self.ack == (78 if self.commits > 1 and self.scenario in ('resize', 'busy') else 77)
+        assert self.ack == (78 if self.commits > 1 and self.scenario in ('resize', 'busy', 'decorations_client') else 77)
         buffer = self.attached[self.surface]
         mapping, offset, width, height, stride = self.buffers[buffer]
         image = bytes(mapping[offset:offset + stride * height])
@@ -270,7 +272,7 @@ class Compositor:
             self.send(buffer, 0)
         else:
             self.held_buffers[buffer] = image
-        if self.commits == 1 and self.scenario in ('resize', 'busy'):
+        if self.commits == 1 and self.scenario in ('resize', 'busy', 'decorations_client'):
             self.configure(400, 300, 78)
         elif self.commits == 1 and self.scenario == 'input':
             self.send(self.pointer, 0, struct.pack('<IIii', 40, self.surface, 20 * 256, 20 * 256))
@@ -390,6 +392,14 @@ class WaylandIntegrationTests(unittest.TestCase):
         result, driver = self.run_compositor('decorations')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(driver.decoration_modes, [2])
+
+    def test_client_decoration_mode_keeps_borderless_resize_and_close_working(self):
+        result, driver = self.run_compositor('decorations_client', widgets=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(driver.decoration_modes, [2])
+        self.assertEqual(driver.requested_sizes, [(321, 234), (400, 300)])
+        state = json.loads(result.stdout)
+        self.assertEqual((state['width'], state['height']), (400, 300))
 
     def test_malformed_keymap_descriptors_return_protocol_error(self):
         for scenario in ('keymap_truncated', 'keymap_missing_nul'):

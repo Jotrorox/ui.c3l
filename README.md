@@ -113,6 +113,8 @@ dependencies. Call `open_window()` or `View.open()` on the main thread. Dimensio
 and input coordinates use logical points; AppKit supplies Retina rendering.
 Mouse capture, nested wheel/trackpad and keyboard scrolling, Tab/Shift+Tab,
 Enter/Space, and Command-W are supported on Apple Silicon and Intel.
+When the backend launches a command-line application's AppKit session, it keeps
+the regular activation policy for that session so reopened windows retain focus.
 
 Linux chooses its backend at runtime. `auto` prefers Wayland when
 `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, or `XDG_SESSION_TYPE=wayland` advertises it,
@@ -131,6 +133,9 @@ work on both backends.
 Wayland requests server decorations where available; compositors requiring
 client decorations currently show a borderless window, controlled through
 their window-management shortcuts. Buffer scale is currently 1.
+Tests cover presentation on outputs at scales 1 and 2 and the borderless
+fallback when a compositor selects client decoration mode. Drawing at the
+output's native resolution and client-side window controls remain unsupported.
 
 ## Testing
 
@@ -157,9 +162,14 @@ desktop is available.
 
 On macOS, `c3c test` also exercises AppKit text metrics, native view lifetime,
 keyboard and pointer metadata, fractional trackpad scrolling, and bitmap drawing
-with independent widget clips. These tests do not open desktop windows. Run
-`c3c run --path examples/window` for interactive checks: toggle extra rows,
-scroll each nested list, drag its thumb outside the window, resize, and close.
+with independent widget clips. These tests do not open desktop windows.
+Run `python3 scripts/test-macos.py` in a graphical login session for automated
+AppKit window checks: client resizing and relayout, focus loss, drag capture
+outside the content view, pixels, input, closing, and reopening in one process.
+The runner uses the system `clang` to build a test-only helper for each fixture.
+It sends synthetic events through `NSWindow`, observes native focus notifications,
+and reads view bitmaps; no Accessibility or screen-recording permission is needed.
+Run `c3c run --path examples/window` for additional interactive checks.
 Use `--target macos-x64 --linker=cc` to test Intel binaries under Rosetta on
 Apple Silicon. The system linker supports newer Apple SDK formats than the
 compiler's bundled cross-linker.
@@ -168,6 +178,7 @@ Set `UI_TEST_OPTIMIZATION=release` to compile the Python integration fixtures an
 example with `-O3` (the default is `debug`, using `-O0`). CI runs both profiles on
 native Linux and Windows x64 and ARM64 runners, plus a macOS Apple Silicon runner
 testing ARM64 and Intel targets (the latter under Rosetta), with explicit compiler targets.
+The macOS matrix also runs the automated AppKit desktop suite for both targets.
 Each matrix job reports independently. C3 tests in `tests/*.c3` are discovered
 automatically; window fixtures remain in `tests/fixtures/`.
 

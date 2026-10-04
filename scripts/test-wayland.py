@@ -49,9 +49,9 @@ def frame_presented(log):
     return False
 
 
-def check_window(weston, backend, binary, directory):
+def check_window(weston, backend, binary, directory, scale=1):
     socket_name = 'ui-native-wayland'
-    runtime = directory / binary.name
+    runtime = directory / f'{binary.name}-scale-{scale}'
     runtime.mkdir(mode=0o700)
     server_log = runtime / 'weston.log'
     client_log = runtime / 'client.log'
@@ -62,7 +62,8 @@ def check_window(weston, backend, binary, directory):
     try:
         with server_log.open('wb') as log:
             server = subprocess.Popen([weston, f'--backend={backend}', '--shell=kiosk-shell.so',
-                                       '--use-pixman', '--no-config', '--idle-time=0', f'--socket={socket_name}'],
+                                       '--use-pixman', '--no-config', '--idle-time=0', f'--socket={socket_name}',
+                                       f'--scale={scale}'],
                                       env=environment, stdout=log, stderr=log)
         wait_for(lambda: (runtime / socket_name).exists(), server, 10, 'Weston startup')
         with client_log.open('wb') as log:
@@ -74,7 +75,7 @@ def check_window(weston, backend, binary, directory):
         stop(server)
         if client.wait(timeout=5) != 1 or 'CONNECTION_FAILED' not in client_log.read_text(errors='replace'):
             raise RuntimeError('client did not report compositor disconnection')
-        print(f'{binary.name}: configured, rendered, presented, disconnected', flush=True)
+        print(f'{binary.name} (output scale {scale}): configured, rendered, presented, disconnected', flush=True)
     except BaseException:
         for log in (server_log, client_log):
             if log.exists():
@@ -96,7 +97,8 @@ def main():
         directory = Path(directory)
         for name in ('blank_window', 'wayland_window'):
             binary = compile_fixture(name, directory / 'build')
-            check_window(weston, backend, binary, directory)
+            for scale in (1, 2):
+                check_window(weston, backend, binary, directory, scale)
 
 
 if __name__ == '__main__':
